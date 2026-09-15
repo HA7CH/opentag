@@ -20,11 +20,13 @@ import {
 import { AgentRuntimeTestOwner } from "./runtime/agent-runtime-test-owner.js";
 import { stopAgentSessions } from "./runtime/agent-session-stopper.js";
 import { ConnectionRegistry } from "./runtime/connection-registry.js";
+import { ContextTreeOperationOwner } from "./runtime/context-tree-operation-owner.js";
 import { ImDeliveryWorker } from "./runtime/im-delivery-worker.js";
 import { ProviderCliReconcileOwner } from "./runtime/provider-cli-reconcile-owner.js";
 import { PostgresRuntimeCustodyStore } from "./runtime/runtime-custody-store.js";
 import { RuntimeDomainOwner } from "./runtime/runtime-domain-owner.js";
 import { PostgresRuntimeDurableWorkStore } from "./runtime/runtime-durable-work-store.js";
+import { ContextTreeOperationService } from "./services/agents/context-tree-operation-service.js";
 import { AgentRuntimeTestService, AgentService, AgentSetupService } from "./services/agents/index.js";
 import {
   AuthService,
@@ -311,6 +313,7 @@ export async function startServer(): Promise<void> {
       shouldPrewarmOfficialProviderClis: (computerId) =>
         computerService.hasActiveAgentWithoutMessagingSetup(computerId),
     });
+    const contextTreeOperationOwner = new ContextTreeOperationOwner(registry);
     const agentRuntimeTestOwner = new AgentRuntimeTestOwner(registry);
     const sessionCollaborationService = new SessionCollaborationService({
       assembler: runtimeSnapshotAssembler,
@@ -330,6 +333,7 @@ export async function startServer(): Promise<void> {
             domainOwner.requestReconcile(computerId, instanceId, request, onDispatched),
         }),
     });
+    const contextTreeOperationService = new ContextTreeOperationService(agentService, contextTreeOperationOwner);
     const agentRuntimeTestService = new AgentRuntimeTestService(agentService, agentRuntimeTestOwner);
     const feishuConnections = new FeishuConnectionManager({
       database,
@@ -409,6 +413,7 @@ export async function startServer(): Promise<void> {
       agentService,
       agentSetupService,
       agentRuntimeTestService,
+      contextTreeOperationService,
       authService,
       browserAuth: {
         devSignIn: Boolean(dev),
@@ -449,6 +454,7 @@ export async function startServer(): Promise<void> {
         registry,
         domainOwner,
         agentRuntimeTestOwner,
+        contextTreeOperationOwner,
         providerCliReconcileOwner,
         channelTarget: () => channelTargetPoller.get(),
       },

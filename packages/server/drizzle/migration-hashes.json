@@ -210,6 +210,11 @@
       "idx": 41,
       "tag": "0041_colossal_magdalene",
       "sha256": "31af6ccfbe9ffc88182ba3480e0775b3fb71a9bfd3d4555ff4d90d52c3e6267e"
+    },
+    {
+      "idx": 42,
+      "tag": "0042_cultured_dark_beast",
+      "sha256": "04c7fd339804a28ec4844aeb1ea85fe449c691e6f81134ac2df82032dfdf37d8"
     }
   ]
 }
