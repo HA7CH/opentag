@@ -10,6 +10,8 @@ import {
 } from "./harness.mjs";
 import { stageFilteredPiConfig } from "./pi-config-guard.mjs";
 
+export const REAL_ACCEPT_TIMEOUT_MS = 1_800_000;
+
 function parseMarker(stdout, name) {
   const match = new RegExp(`__${name}__=(.+)`).exec(stdout);
   return match?.[1]?.trim();
@@ -70,7 +72,7 @@ export async function runRealSmoke({ image, prefix, piConfigDir, provider }) {
     const acceptStarted = Date.now();
     const accept = await execInContainer(name, ["sh", "-c", ACCEPT_WRAPPER, "sh", provider], {
       allowFailure: true,
-      timeoutMs: 1_800_000,
+      timeoutMs: REAL_ACCEPT_TIMEOUT_MS,
     });
     const acceptanceMs = Date.now() - acceptStarted;
     const memoryPeak = parseMarker(accept.stdout, "MEMORY_PEAK");

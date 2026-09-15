@@ -44,18 +44,26 @@ function filterProviderObject(value: unknown, providers: ReadonlySet<string>): u
 }
 
 function filterModelsDocument(value: unknown, providers: ReadonlySet<string>): unknown {
-  if (typeof value !== "object" || value === null || Array.isArray(value)) return value;
-  const record = { ...(value as Record<string, unknown>) };
-  if (Array.isArray(record.models)) {
-    record.models = record.models.filter(
+  if (typeof value !== "object" || value === null || Array.isArray(value)) fail("models.json must be a JSON object");
+  const record = value as Record<string, unknown>;
+  // Construct output from recognized top-level fields only; unknown fields are dropped, never forwarded.
+  const filtered: Record<string, unknown> = {};
+  if (record.models !== undefined) {
+    if (!Array.isArray(record.models)) fail("models.json has a malformed models field");
+    filtered.models = record.models.filter(
       (entry) =>
         typeof entry === "object" &&
         entry !== null &&
         providers.has(String((entry as { provider?: unknown }).provider ?? "")),
     );
   }
-  if (record.providers !== undefined) record.providers = filterProviderObject(record.providers, providers);
-  return record;
+  if (record.providers !== undefined) {
+    if (typeof record.providers !== "object" || record.providers === null || Array.isArray(record.providers)) {
+      fail("models.json has a malformed providers field");
+    }
+    filtered.providers = filterProviderObject(record.providers, providers);
+  }
+  return filtered;
 }
 
 function filterSettingsDocument(value: unknown, providers: ReadonlySet<string>): unknown {

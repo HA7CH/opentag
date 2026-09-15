@@ -91,15 +91,18 @@ node scripts/e2e/cloud-computer.mjs runner-toolchain --image opentag-runner:work
 ~~~
 
 The harness always uses `--cpus=1 --memory=1g --memory-swap=1g` and asserts those inspect values.
-Offline checks probe exact parsed Node/Git/gh/Slack/Lark/Pi/CT/CLI versions (anchored patterns,
-never substring matches) and assemble the six Context Tree skills on a disposable tree. Unknown
-flags fail. `--mode real` requires `--pi-config-dir` and `--provider`; missing config fails before
+Offline checks probe exact parsed Node/Git/gh/Slack/Lark/Pi/CT/CLI versions (anchored full-line
+patterns including the reviewed catalog banners) and assemble the six Context Tree skills on a
+disposable tree. Unknown flags fail. `--mode real` requires `--pi-config-dir` and `--provider`; missing config fails before
 any model claim, and providers other than the currently supported `deepseek` are rejected at
 parse time. Offline is the only mode that reports `model=skipped`. Real validates the supplied
 config host-side (whitelisted regular files, selected-provider documents, safe settings keys, no
 HOME, no symlinks, no `!` shell-command indirections), stages a filtered copy, and injects only
 that copy via `docker cp` plus a one-shot root `chown`/`chmod` exec into a fresh guard container —
-never a whole `HOME` mount. It asserts a confirmed cancellation of a live Bash fixture child
+never a whole `HOME` mount. `models.json` is rebuilt from the recognized top-level fields
+`models` and `providers` only, so unknown fields never reach the container; malformed shapes fail
+with fixed messages. The guard runs `sleep infinity` as PID 1 until harness cleanup removes it;
+the real acceptance command has a separate 30-minute timeout. It asserts a confirmed cancellation of a live Bash fixture child
 (shared tracked Pi PID set), and removes the container afterwards with daemon-confirmed removal.
 
 Timing fields are distinct: `startupMs` measures a fresh container plus Runner CLI startup

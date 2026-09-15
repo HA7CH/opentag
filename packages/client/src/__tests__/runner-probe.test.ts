@@ -108,6 +108,30 @@ describe("runner tool probes", () => {
       output: "Using slack.bin v4.7.0\n",
       why: "renamed slack.bin breaks the reviewed catalog pattern",
     },
+    {
+      name: "slack",
+      key: "slack version",
+      output: "old Using slack v4.7.0\n",
+      why: "leading wrapper on the Slack banner",
+    },
+    {
+      name: "slack",
+      key: "slack version",
+      output: "Using slack v4.7.0 (beta)\n",
+      why: "trailing wrapper on the Slack banner",
+    },
+    {
+      name: "lark-cli",
+      key: "lark-cli --version",
+      output: "old lark-cli version 1.0.92\n",
+      why: "leading wrapper on the Lark banner",
+    },
+    {
+      name: "lark-cli",
+      key: "lark-cli --version",
+      output: "lark-cli version 1.0.92 extra\n",
+      why: "trailing wrapper on the Lark banner",
+    },
   ])("rejects $name when $why", async ({ name, key, output }) => {
     const probes = await probeRunnerTools({
       execFile: router({ ...GOOD_OUTPUTS, [key]: output }),
@@ -129,5 +153,21 @@ describe("runner tool probes", () => {
     });
     expect(probes.find((probe) => probe.name === `${command}:surface`)?.ok).toBe(false);
     expect(runnerToolsReady(probes)).toBe(false);
+  });
+
+  it("accepts exact catalog banners with conventional trailing output", async () => {
+    // Multi-line version/help conventions stay accepted: matching is anchored on the first line.
+    const probes = await probeRunnerTools({
+      execFile: router({
+        ...GOOD_OUTPUTS,
+        "slack version": "Using slack v4.7.0\nUpdate checks are disabled.\n",
+        "lark-cli --version": "lark-cli version 1.0.92\nbuilt from the pinned release\n",
+      }),
+      env: { HOME: "/tmp" },
+      expected: expectedFromIdentity(identity()),
+    });
+    expect(probes.find((probe) => probe.name === "slack")?.ok).toBe(true);
+    expect(probes.find((probe) => probe.name === "lark-cli")?.ok).toBe(true);
+    expect(runnerToolsReady(probes)).toBe(true);
   });
 });

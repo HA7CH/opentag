@@ -55,14 +55,18 @@ function filterAuth(name, parsed, provider) {
 }
 
 function filterModels(name, parsed, provider) {
-  const filtered = { ...requireObject(name, parsed) };
-  if (Array.isArray(filtered.models)) {
-    for (const entry of filtered.models) {
+  const source = requireObject(name, parsed);
+  // Construct output from recognized top-level fields only; unknown fields are dropped, never forwarded.
+  const filtered = {};
+  if (source.models !== undefined) {
+    if (!Array.isArray(source.models)) fail(`${name} has a malformed models field`);
+    for (const entry of source.models) {
       const entryProvider = typeof entry === "object" && entry !== null ? String(entry.provider ?? "") : "";
       if (entryProvider !== provider) fail(`${name} carries a model for provider ${entryProvider || "unknown"}`);
     }
+    filtered.models = source.models;
   }
-  if (filtered.providers !== undefined) filtered.providers = filterProviderKeys(name, filtered.providers, provider);
+  if (source.providers !== undefined) filtered.providers = filterProviderKeys(name, source.providers, provider);
   return filtered;
 }
 

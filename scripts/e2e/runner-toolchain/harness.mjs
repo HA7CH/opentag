@@ -106,7 +106,9 @@ export async function runLimitedContainer({
 
 export async function startGuardContainer({ image, name }) {
   registerRemovalBackstop(name);
-  await docker(["run", "--detach", "--name", name, ...LIMITED_ARGS, image, "sh", "-c", "sleep 600"]);
+  // Indefinite keepalive on the pinned Debian image: a bounded sleep could expire inside the
+  // real-accept budget and kill the guard mid-acceptance. Removal stays with harness cleanup.
+  await docker(["run", "--detach", "--name", name, ...LIMITED_ARGS, image, "sleep", "infinity"]);
 }
 
 export async function execInContainer(name, args, options = {}) {

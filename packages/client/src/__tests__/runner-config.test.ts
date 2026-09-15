@@ -164,4 +164,72 @@ describe("isolated Pi config copy", () => {
     // The rejected copy must not leave a partial destination behind.
     await expect(lstat(destination)).rejects.toMatchObject({ code: "ENOENT" });
   });
+
+  it("rebuilds models.json from recognized fields only, dropping secret-bearing extras", async () => {
+    const root = await temp("opentag-pi-cfg-models-");
+    const source = join(root, "src");
+    await mkdir(source);
+    await writeFile(
+      join(source, "models.json"),
+      `${JSON.stringify({
+        models: [
+          { id: "keep", provider: "deepseek", contextWindow: 128000 },
+          { id: "drop", provider: "openai" },
+        ],
+        providers: { deepseek: { baseUrl: "https://example.invalid" }, openai: { baseUrl: "https://other.invalid" } },
+        telemetry: { endpoint: "https://example.invalid/t" },
+        apiToken: "canary1234567890",
+      })}\n`,
+    );
+    const destination = join(root, "dst");
+    await copyIsolatedPiConfig({ destination, source, providers: ["deepseek"] });
+    const raw = await readFile(join(destination, "models.json"), "utf8");
+    expect(raw).not.toContain("canary1234567890");
+    expect(raw).not.toContain("telemetry");
+    expect(raw).not.toContain("other.invalid");
+    const models = JSON.parse(raw) as Record<string, unknown>;
+    expect(Object.keys(models).sort()).toEqual(["models", "providers"]);
+    expect(models.models).toEqual([{ id: "keep", provider: "deepseek", contextWindow: 128000 }]);
+    expect(models.providers).toEqual({ deepseek: { baseUrl: "https://example.invalid" } });
+  });
+
+  it.each([null, ["canary1234567890"], "canary1234567890", 1, true])(
+    "rejects a non-object models.json document: %j",
+    async (document) => {
+      const root = await temp("opentag-pi-cfg-root-");
+      const source = join(root, "src");
+      const destination = join(root, "dst");
+      await mkdir(source);
+      await writeFile(join(source, "models.json"), JSON.stringify(document));
+      await expect(copyIsolatedPiConfig({ destination, source, providers: ["deepseek"] })).rejects.toThrow(
+        "models.json must be a JSON object",
+      );
+      await expect(lstat(destination)).rejects.toMatchObject({ code: "ENOENT" });
+    },
+  );
+
+  it("rejects malformed models.json shapes with fixed messages and no fragments", async () => {
+    const root = await temp("opentag-pi-cfg-badmodels-");
+    const source = join(root, "src");
+    await mkdir(source);
+    await writeFile(
+      join(source, "models.json"),
+      `${JSON.stringify({ models: { deepseek: { id: "x" } }, canary: "canary1234567890" })}\n`,
+    );
+    const destination = join(root, "dst");
+    const failure = await copyIsolatedPiConfig({ destination, source, providers: ["deepseek"] }).catch(
+      (error: unknown) => error,
+    );
+    expect(failure).toBeInstanceOf(Error);
+    expect((failure as Error).message).toMatch(/malformed models field/);
+    expect((failure as Error).message).not.toContain("canary1234567890");
+    await expect(lstat(destination)).rejects.toMatchObject({ code: "ENOENT" });
+
+    const second = join(root, "src2");
+    await mkdir(second);
+    await writeFile(join(second, "models.json"), `${JSON.stringify({ providers: ["deepseek"] })}\n`);
+    await expect(
+      copyIsolatedPiConfig({ destination: join(root, "dst2"), source: second, providers: ["deepseek"] }),
+    ).rejects.toThrow(/malformed providers field/);
+  });
 });

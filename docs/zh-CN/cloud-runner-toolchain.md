@@ -85,14 +85,17 @@ node scripts/e2e/cloud-computer.mjs runner-toolchain --image opentag-runner:work
 ~~~
 
 harness 始终使用 `--cpus=1 --memory=1g --memory-swap=1g`，并断言 inspect 值。offline 检查以
-锚定模式解析 Node/Git/gh/Slack/Lark/Pi/CT/CLI 的精确版本（绝不子串匹配），并在一次性 tree
+锚定整行模式解析 Node/Git/gh/Slack/Lark/Pi/CT/CLI 的精确版本（包括已审阅 catalog 的版本输出），并在一次性 tree
 上组装六个 Context Tree skill。未知参数会失败。`--mode real` 必须同时提供 `--pi-config-dir`
 和 `--provider`；缺少配置会在声称模型结果之前失败，非当前支持的 `deepseek` 以外的 provider
 在参数解析时即被拒绝。只有 offline 模式报告 `model=skipped`。real 模式在宿主机侧先校验配置
 （白名单常规文件、选定 provider 的文档、安全 settings 键、拒绝整个 HOME、symlink 与 `!`
 shell 命令间接寻址），生成过滤后的暂存副本，并只把该副本通过 `docker cp` 加一次性 root
-`chown`/`chmod` 注入全新 guard 容器——绝不整体挂载 `HOME`——断言一个存活 Bash fixture 子
-进程被确认取消（共享的 Pi PID 跟踪集），随后删除容器并以 daemon 确认删除结果。
+`chown`/`chmod` 注入全新 guard 容器——绝不整体挂载 `HOME`。`models.json` 只由受认可的顶层字段
+`models` 与 `providers` 重建，未知字段绝不进入容器；畸形结构以固定消息失败。guard 容器以
+`sleep infinity` 作为 PID 1 持续运行，直到 harness 清理时删除；真实验收命令单独设置 30 分钟超时。
+验收断言一个存活 Bash fixture 子进程被确认取消（共享的 Pi PID 跟踪集），随后删除
+容器并以 daemon 确认删除结果。
 
 计时字段是分开的：`startupMs` 量度全新容器加 Runner CLI 启动（`identity`）；probe/skills/
 accept 的耗时单独报告（`durations`、`acceptanceMs`）。`memory.peak` 在容器退出前于容器内读
@@ -128,4 +131,3 @@ Sandbox、网络策略或 IM 的证明。
 - 非 amd64 宿主机上的本地 Docker 走模拟，不能证明 native Sandbox 或 Cloud Run。
 - 此镜像不向 Cloud 注册、不开放 HTTP session 端口、也不调用 Server API。
 - 镜像里的 Slack/Lark 是 catalog 锁定、已关闭更新检查的 CLI，不是已登录的 IM。
-

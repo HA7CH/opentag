@@ -60,6 +60,11 @@ export function expectedFromIdentity(identity: RunnerIdentity): Readonly<Record<
   };
 }
 
+/** Catalog patterns are grouped full-line matches (capture group 1 preserved), never substring. */
+function catalogLinePattern(catalogPattern: string): RegExp {
+  return new RegExp(`^(?:${catalogPattern})$`);
+}
+
 /**
  * A probe is ok only when the first output line matches the tool's anchored pattern and the
  * captured version equals the expected one exactly (`0.84.20` must never satisfy `0.84.2`).
@@ -70,7 +75,7 @@ function evaluateVersionProbe(
   expected: Readonly<Record<string, string>> | undefined,
   catalogPattern?: string,
 ): boolean {
-  const pattern = catalogPattern !== undefined ? new RegExp(catalogPattern) : TOOL_VERSION_PATTERNS[name];
+  const pattern = catalogPattern !== undefined ? catalogLinePattern(catalogPattern) : TOOL_VERSION_PATTERNS[name];
   if (!pattern) return true;
   const match = pattern.exec(detail);
   if (!match) return false;

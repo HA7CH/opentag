@@ -57,6 +57,80 @@ test("non-selected provider auth entries are rejected, not copied", async () => 
   }
 });
 
+test("models.json is rebuilt from recognized fields only, dropping secret-bearing extras", async () => {
+  const { source, cleanup } = await fixture();
+  try {
+    await writeSource(source, {
+      "auth.json": { deepseek: { type: "api_key", key: "sk-test" } },
+      "models.json": {
+        models: [{ id: "deepseek-v4.1", provider: "deepseek", contextWindow: 128000 }],
+        providers: { deepseek: { baseUrl: "https://example.invalid", api: "openai-completions" } },
+        telemetry: { endpoint: "https://example.invalid/t" },
+        apiToken: "canary1234567890",
+      },
+    });
+    const staged = stageFilteredPiConfig({ source, provider: "deepseek" });
+    const raw = await readFile(join(staged, "models.json"), "utf8");
+    assert.ok(!raw.includes("canary1234567890"), "staged models.json must omit the fake secret");
+    assert.ok(!raw.includes("telemetry"), "unknown top-level fields are dropped");
+    const stagedModels = JSON.parse(raw);
+    assert.deepEqual(Object.keys(stagedModels).sort(), ["models", "providers"]);
+    assert.deepEqual(stagedModels.models, [{ id: "deepseek-v4.1", provider: "deepseek", contextWindow: 128000 }]);
+    assert.deepEqual(stagedModels.providers, {
+      deepseek: { baseUrl: "https://example.invalid", api: "openai-completions" },
+    });
+  } finally {
+    await cleanup();
+  }
+});
+
+test("non-object models.json documents are rejected without source fragments", async () => {
+  const { source, cleanup } = await fixture();
+  try {
+    for (const document of [null, ["canary1234567890"], "canary1234567890", 1, true]) {
+      await writeSource(source, {
+        "auth.json": { deepseek: { type: "api_key", key: "sk-test" } },
+        "models.json": JSON.stringify(document),
+      });
+      assert.throws(() => stageFilteredPiConfig({ source, provider: "deepseek" }), {
+        message: "models.json must be a JSON object",
+      });
+    }
+  } finally {
+    await cleanup();
+  }
+});
+
+test("malformed models.json shapes are rejected without raw fragments", async () => {
+  const { source, cleanup } = await fixture();
+  try {
+    await writeSource(source, {
+      "auth.json": { deepseek: { type: "api_key", key: "sk-test" } },
+      "models.json": { models: { deepseek: { id: "x" } }, canary: "canary1234567890" },
+    });
+    assert.throws(
+      () => stageFilteredPiConfig({ source, provider: "deepseek" }),
+      (error) => {
+        assert.match(error.message, /malformed models field/);
+        assert.ok(!error.message.includes("canary1234567890"));
+        return true;
+      },
+    );
+  } finally {
+    await cleanup();
+  }
+  const second = await fixture();
+  try {
+    await writeSource(second.source, {
+      "auth.json": { deepseek: { type: "api_key", key: "sk-test" } },
+      "models.json": { providers: ["deepseek"] },
+    });
+    assert.throws(() => stageFilteredPiConfig({ source: second.source, provider: "deepseek" }), /JSON object/);
+  } finally {
+    await second.cleanup();
+  }
+});
+
 const REJECTION_CASES = [
   { name: "extra-file", files: { "auth.json": { deepseek: {} }, "notes.txt": "x" }, pattern: /unexpected entry/ },
   { name: "missing-auth", files: { "settings.json": {} }, pattern: /missing auth\.json/ },
