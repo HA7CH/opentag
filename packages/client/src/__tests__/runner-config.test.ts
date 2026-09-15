@@ -147,4 +147,21 @@ describe("isolated Pi config copy", () => {
       copyIsolatedPiConfig({ destination: join(root, "missing", "dst"), source, providers: ["deepseek"] }),
     ).rejects.toThrow(/existing real directory/);
   });
+
+  it("reports malformed JSON with the filename only, never source fragments", async () => {
+    const root = await temp("opentag-pi-cfg-badjson-");
+    const source = join(root, "src");
+    await mkdir(source);
+    await writeFile(join(source, "auth.json"), "canary1234567890\n");
+    const destination = join(root, "dst");
+    const failure = await copyIsolatedPiConfig({ destination, source, providers: ["deepseek"] }).catch(
+      (error: unknown) => error,
+    );
+    expect(failure).toBeInstanceOf(Error);
+    expect((failure as Error).message).toBe("auth.json is not valid JSON");
+    expect((failure as Error).message).not.toContain("canary");
+    expect((failure as Error).message).not.toContain("1234567890");
+    // The rejected copy must not leave a partial destination behind.
+    await expect(lstat(destination)).rejects.toMatchObject({ code: "ENOENT" });
+  });
 });

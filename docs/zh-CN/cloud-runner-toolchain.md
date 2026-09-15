@@ -52,13 +52,18 @@ node scripts/runner/cli.mjs build --channel staging --version 0.0.6-staging.4.1 
 node scripts/runner/cli.mjs build --channel dev --allow-dirty true --tag opentag-runner:local
 ~~~
 
-暂存器只拷贝 allowlist（不含 `.git`、`.env`、`.npmrc`、HOME、测试或工作数据），拒绝任何 symlink，并拒
-绝即使位于允许目录下的凭证文件名（如 `auth.json`）。Docker context 是这份暂存目录，不是整个
-checkout。frozen `pnpm install` 必须发生在 staging/prod 的 `prepare-cli-release` 改写之前，以免
-lockfile 失配。
+暂存器只拷贝 allowlist（不含 `.git`、`.env`、`.npmrc`、HOME、测试或工作数据），拒绝任何 symlink，
+拒绝即使位于允许目录下的凭证文件名（如 `auth.json`），并且只暂存 **Git 跟踪的文件**
+（`git ls-files`，因此 index 中的 intent-to-add 也算在内）：被忽略或未跟踪的本地文件（日志、
+编辑器临时内容）绝不进入 context 或最终技能目录；无法确立源码 Git 归属时暂存直接失败。
+因此新的预期源码文件需要 index 意图；dirty 开发构建仍携带已跟踪文件的工作区内容。Docker
+context 是这份暂存目录，不是整个 checkout。frozen `pnpm install` 必须发生在 staging/prod 的
+`prepare-cli-release` 改写之前，以免 lockfile 失配。
 
 Node 版本必须在 `scripts/runner/pins.mjs` 中对应已审阅的镜像摘要；缺少映射的版本升级会在构建前失败。
 运行时依赖冲突支持一层嵌套；若已嵌套包还需要再次嵌套冲突依赖，会明确失败，避免交付错误版本。
+闭包在拷贝前校验完整规划布局——每个顶层与嵌套放置位置的每条依赖边——对任何无法精确表达的内容
+（包括任意放置位置的同名遮蔽）一律拒绝装配。
 
 镜像 label 记录 source SHA、dirty 标记、CLI/version 和 tool lock。构建成功后用 `docker inspect`
 读取 image ID。
@@ -93,6 +98,8 @@ shell 命令间接寻址），生成过滤后的暂存副本，并只把该副�
 accept 的耗时单独报告（`durations`、`acceptanceMs`）。`memory.peak` 在容器退出前于容器内读
 取，绝不在删除后读取。Runner CLI 安装了 SIGTERM/SIGINT 处理器（它通常是 PID 1），执行自身
 清理后以 143/130 退出；宿主机 harness 在收到信号时先终止自有进程组（包括 Docker CLI 的子进程），再删除容器。
+配置 JSON 解析失败只报告文件名（绝不回显源码片段）；验收日志脱敏除结构化字段与已知密钥前缀外，
+还覆盖引号包围的 JSON 秘密字段和完整的 `Authorization`/`Bearer` 值。
 
 默认不带子命令运行 `opentag-runner` 会非零退出，不会挂起等待 server。
 

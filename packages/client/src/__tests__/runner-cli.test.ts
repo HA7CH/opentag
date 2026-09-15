@@ -165,6 +165,28 @@ describe("runner CLI entry", () => {
     expect(captured.stderr.chunks.join("")).toMatch(/unsupported provider for real acceptance: openai/);
   });
 
+  it("never leaks full or partial canary when the copied config is malformed", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "opentag-runner-canary-"));
+    const config = await mkdtemp(join(tmpdir(), "opentag-runner-canary-cfg-"));
+    directories.push(cwd, config);
+    await writeFile(join(config, "auth.json"), "canary1234567890\n");
+    const captured = io();
+    expect(
+      await runRunnerCli(
+        ["accept", "--mode", "real", "--pi-config-dir", config, "--provider", "deepseek"],
+        { ...captured, env: { HOME: cwd, PATH: join(cwd, "empty-bin") } },
+        cwd,
+      ),
+    ).toBe(1);
+    const stderr = captured.stderr.chunks.join("");
+    expect(stderr).toContain("auth.json is not valid JSON");
+    expect(stderr).not.toMatch(/canary/i);
+    expect(stderr).not.toContain("1234567890");
+    for (let length = 4; length <= "canary1234567890".length; length += 1) {
+      expect(stderr).not.toContain("canary1234567890".slice(0, length));
+    }
+  });
+
   it("rejects real accept without a provider or config directory at parse time", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "opentag-runner-parse-"));
     directories.push(cwd);

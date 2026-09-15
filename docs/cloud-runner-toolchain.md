@@ -55,14 +55,21 @@ node scripts/runner/cli.mjs build --channel dev --allow-dirty true --tag opentag
 ~~~
 
 The stager copies an allowlist only (no `.git`, `.env`, `.npmrc`, HOME, tests, or work data),
-rejects every symlink, and refuses credential filenames such as `auth.json` even under an allowed
-directory. The Docker context is that staged directory, not the checkout. Frozen `pnpm install`
-runs before any staging/prod `prepare-cli-release` rewrite so the lockfile still matches.
+rejects every symlink, refuses credential filenames such as `auth.json` even under an allowed
+directory, and stages **only Git-tracked files** (`git ls-files`, so index intent-to-add counts):
+ignored or untracked local files (logs, editor droppings) never enter the context or the final
+skills directory, and staging fails safely when source Git ownership cannot be established. A new
+intended source file therefore needs index intent; dirty development builds still carry the
+working-tree content of tracked files. The Docker context is that staged directory, not the
+checkout. Frozen `pnpm install` runs before any staging/prod `prepare-cli-release` rewrite so the
+lockfile still matches.
 
 The Node version must have a reviewed image digest in `scripts/runner/pins.mjs`; a version bump
 without that mapping fails before building. Runtime dependency conflicts support one level of
 nesting; a conflict beneath an already nested package fails explicitly instead of shipping the
-wrong version.
+wrong version. Before copying, the closure verifies the complete planned layout — every dependency
+edge of every top-level and nested placement — and fails closed on anything it cannot represent
+exactly, including same-name shadowing in any placement.
 
 Image labels record source SHA, dirty flag, CLI/version, and tool lock. `docker inspect` reports
 the image ID after a successful build.
@@ -100,7 +107,9 @@ Timing fields are distinct: `startupMs` measures a fresh container plus Runner C
 `memory.peak` is read inside the container before it exits, never after removal. The Runner CLI
 installs SIGTERM/SIGINT handlers (it is usually PID 1), runs its scoped cleanup, and exits
 143/130; the host harness kills owned process groups, including nested Docker CLI processes,
-on signals before removing containers.
+on signals before removing containers. Malformed config JSON is reported with the filename only
+(never source fragments), and acceptance log redaction covers quoted JSON secret fields and full
+`Authorization`/`Bearer` values as well as structured fields and known key prefixes.
 
 Default `opentag-runner` with no command exits nonzero. It does not hang waiting for a server.
 

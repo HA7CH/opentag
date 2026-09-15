@@ -1,3 +1,4 @@
+import { spawnSync } from "node:child_process";
 import {
   cpSync,
   existsSync,
@@ -67,6 +68,25 @@ function toPosix(path) {
   return path.split(sep).join("/");
 }
 
+/**
+ * The version-controlled source files in the Git index, including intent-to-add entries.
+ * Staging must fail safely when ownership cannot be established: silently falling back to a
+ * recursive copy would smuggle ignored/untracked local files into a build labelled as a clean
+ * source SHA (ignored files do not show up in `git status --porcelain`).
+ */
+export function listTrackedSourceFiles(root) {
+  const result = spawnSync("git", ["-C", root, "ls-files", "-z"], {
+    encoding: "utf8",
+    maxBuffer: 64 * 1024 * 1024,
+  });
+  if (result.error || result.status !== 0) {
+    fail(
+      `cannot establish source Git ownership for ${root} (git ls-files failed); refusing to stage the build context`,
+    );
+  }
+  return new Set(result.stdout.split("\0").filter((entry) => entry.length > 0));
+}
+
 export function isInsideRoot(root, candidate) {
   const suffix = relative(root, candidate);
   return suffix === "" || (!isAbsolute(suffix) && !suffix.startsWith(`..${sep}`) && suffix !== "..");
@@ -127,28 +147,38 @@ function assertRegular(root, canonicalRoot, absolutePath) {
   return stats;
 }
 
-function copyFile(root, canonicalRoot, from, to) {
+function copyFile(root, canonicalRoot, from, to, tracked) {
   const rel = toPosix(relative(root, from));
   if (denied(rel) || isCredentialPath(rel)) fail(`refusing to stage credential or denied path: ${rel}`);
   assertRegular(root, canonicalRoot, from);
+  if (!tracked.has(rel)) return false;
   mkdirSync(dirname(to), { recursive: true });
   cpSync(from, to);
+  return true;
 }
 
-function copyDirectory(root, canonicalRoot, from, to) {
+/** Deny/allow one directory entry before staging; credential and symlink checks stay first. */
+function assertStageableEntry(childRel, entry, tracked) {
+  if (entry.isSymbolicLink()) fail(`refusing to copy symlink: ${childRel}`);
+  if (denied(childRel)) {
+    if (isCredentialPath(childRel)) fail(`refusing to stage credential or denied path: ${childRel}`);
+    return false;
+  }
+  // Ignored/untracked local files (logs, editor droppings) never enter the context; only
+  // version-controlled files within the allowlist are staged.
+  if (entry.isFile() && !tracked.has(childRel)) return false;
+  return true;
+}
+
+function copyDirectory(root, canonicalRoot, from, to, tracked) {
   assertRegular(root, canonicalRoot, from);
-  mkdirSync(to, { recursive: true });
   for (const entry of readdirSync(from, { withFileTypes: true })) {
     const childFrom = join(from, entry.name);
     const childRel = toPosix(relative(root, childFrom));
-    if (entry.isSymbolicLink()) fail(`refusing to copy symlink: ${childRel}`);
-    if (denied(childRel)) {
-      if (isCredentialPath(childRel)) fail(`refusing to stage credential or denied path: ${childRel}`);
-      continue;
-    }
+    if (!assertStageableEntry(childRel, entry, tracked)) continue;
     const childTo = join(to, entry.name);
-    if (entry.isDirectory()) copyDirectory(root, canonicalRoot, childFrom, childTo);
-    else if (entry.isFile()) copyFile(root, canonicalRoot, childFrom, childTo);
+    if (entry.isDirectory()) copyDirectory(root, canonicalRoot, childFrom, childTo, tracked);
+    else if (entry.isFile()) copyFile(root, canonicalRoot, childFrom, childTo, tracked);
     else fail(`refusing to copy special file: ${childFrom}`);
   }
 }
@@ -171,6 +201,7 @@ export function stageRunnerBuildContext({ sourceRoot, destination, allowlist = R
   const canonicalRoot = realpathSync(root);
   const dest = resolve(destination);
   assertDestination(root, canonicalRoot, dest);
+  const tracked = listTrackedSourceFiles(root);
   for (const entry of allowlist) {
     const from = join(root, entry);
     const to = join(dest, entry);
@@ -179,8 +210,13 @@ export function stageRunnerBuildContext({ sourceRoot, destination, allowlist = R
     const stats = lstatSync(from);
     if (stats.isSymbolicLink()) fail(`allowlisted path is a symlink: ${entry}`);
     assertNoSymlinkAncestors(root, from);
-    if (stats.isDirectory()) copyDirectory(root, canonicalRoot, from, to);
-    else copyFile(root, canonicalRoot, from, to);
+    if (stats.isDirectory()) {
+      copyDirectory(root, canonicalRoot, from, to, tracked);
+    } else {
+      // Allowlisted files are declared build inputs; they must be version-controlled.
+      if (!tracked.has(toPosix(entry))) fail(`allowlisted path is not version-controlled: ${entry}`);
+      copyFile(root, canonicalRoot, from, to, tracked);
+    }
   }
   if (identity) writeFileSync(join(dest, "runner-identity.json"), `${JSON.stringify(identity, null, 2)}\n`);
   return dest;

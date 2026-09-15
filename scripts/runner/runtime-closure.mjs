@@ -59,9 +59,15 @@ export function scanBarePackageImports(directory) {
 export function collectInstalledClosure({ fromManifestPath, roots }) {
   // A same-name package resolving to a different canonical root is never silently collapsed: the
   // later resolution is nested under the referring package (pnpm/Node semantics). A nested slot
-  // under a nested referrer cannot be placed correctly and fails closed.
+  // under a nested referrer cannot be placed correctly and fails closed. Before anything is
+  // copied, the COMPLETE planned layout is verified: every dependency edge of every placement
+  // must resolve in the destination Node ancestor chain to exactly what the installed graph
+  // selected — iteration-time checks cannot establish that for multiple placements of one
+  // physical package (the multi-parent shadowing finding).
   const byName = new Map();
   const nested = new Map();
+  const edges = [];
+  const edgeKeys = new Set();
   const manifestNames = new Map();
   const referrerName = (manifestPath) => {
     let name = manifestNames.get(manifestPath);
@@ -76,18 +82,31 @@ export function collectInstalledClosure({ fromManifestPath, roots }) {
       queue.push({ from: resolved.manifestPath, name: dependency });
     }
   };
+  const recordEdge = (job, resolved) => {
+    const key = `${job.from}${job.name}`;
+    if (edgeKeys.has(key)) return;
+    edgeKeys.add(key);
+    edges.push({ from: job.from, name: job.name, resolved });
+  };
+  // One physical package can occupy several placements (e.g. c/a and d/a); keep them all.
+  const registerPlacement = (entriesByManifest, entry) => {
+    const placements = entriesByManifest.get(entry.manifestPath) ?? [];
+    placements.push(entry);
+    entriesByManifest.set(entry.manifestPath, placements);
+  };
   // Returns true when the job was already covered; otherwise records it (top-level or nested).
   const recordJob = (job, queue, entriesByManifest) => {
     const resolved = resolveInstalledDependencyPackage(job.from, job.name);
+    recordEdge(job, resolved);
     const recorded = byName.get(job.name);
     if (!recorded) {
       byName.set(job.name, resolved);
-      entriesByManifest.set(resolved.manifestPath, resolved);
+      registerPlacement(entriesByManifest, resolved);
       enqueueDeps(queue, resolved);
       return;
     }
     if (recorded.root === resolved.root && recorded.manifest.version === resolved.manifest.version) return;
-    const referrer = entriesByManifest.get(job.from);
+    const referrer = entriesByManifest.get(job.from)?.[0];
     if (referrer?.parent) {
       // A nested slot under a nested referrer would land on the wrong top-level package and the
       // real referrer would silently resolve the top-level version instead. Fail closed.
@@ -106,7 +125,7 @@ export function collectInstalledClosure({ fromManifestPath, roots }) {
     if (existing) return;
     const entry = { ...resolved, parent };
     nested.set(slot, entry);
-    entriesByManifest.set(resolved.manifestPath, entry);
+    registerPlacement(entriesByManifest, entry);
     enqueueDeps(queue, resolved);
   };
   const queue = roots.map((name) => ({ from: fromManifestPath, name }));
@@ -114,12 +133,50 @@ export function collectInstalledClosure({ fromManifestPath, roots }) {
   while (queue.length > 0) {
     recordJob(queue.shift(), queue, entriesByManifest);
   }
+  const packages = [...byName.values()].sort((left, right) => left.name.localeCompare(right.name));
+  const nestedPackages = [...nested.values()].sort((left, right) =>
+    `${left.parent}/${left.name}`.localeCompare(`${right.parent}/${right.name}`),
+  );
+  verifyPlannedLayout(edges, packages, nestedPackages, entriesByManifest);
   return {
-    packages: [...byName.values()].sort((left, right) => left.name.localeCompare(right.name)),
-    nestedPackages: [...nested.values()].sort((left, right) =>
-      `${left.parent}/${left.name}`.localeCompare(`${right.parent}/${right.name}`),
-    ),
+    packages,
+    nestedPackages,
   };
+}
+
+/** What the destination ancestor chain selects for one edge at one placement in the plan. */
+function plannedSelection(placement, edgeName, topLevel, slots) {
+  const slotKey = placement.parent ? `${placement.parent}/${edgeName}` : `${placement.name}/${edgeName}`;
+  return slots.get(slotKey) ?? topLevel.get(edgeName);
+}
+
+function assertFaithfulEdge(edge, placement, topLevel, slots) {
+  const owner = placement.parent ? `${placement.parent}/${placement.name}` : placement.name;
+  const selected = plannedSelection(placement, edge.name, topLevel, slots);
+  if (!selected) fail(`assembled layout cannot resolve dependency ${edge.name} required by ${owner}`);
+  if (selected.root !== edge.resolved.root || selected.manifest.version !== edge.resolved.manifest.version) {
+    fail(
+      `dependency ${edge.name} required by ${owner} resolves to ${selected.manifest.version} in the assembled layout, but the installed graph selected ${edge.resolved.manifest.version}; the assembler cannot represent this`,
+    );
+  }
+}
+
+/**
+ * Final pre-copy verification: for every top-level AND nested placement, each dependency edge
+ * must resolve in the destination ancestor chain (a top-level package first sees its own nested
+ * slots, then top-level deps; a nested placement first sees its parent's sibling slots — deeper
+ * nesting is unsupported — then top-level deps) to the same canonical root/version the installed
+ * graph selected. Anything else is not faithfully representable and fails before copying.
+ */
+function verifyPlannedLayout(edges, packages, nestedPackages, entriesByManifest) {
+  const topLevel = new Map(packages.map((entry) => [entry.name, entry]));
+  const slots = new Map(nestedPackages.map((entry) => [`${entry.parent}/${entry.name}`, entry]));
+  for (const edge of edges) {
+    const placements = entriesByManifest.get(edge.from) ?? [];
+    for (const placement of placements) {
+      assertFaithfulEdge(edge, placement, topLevel, slots);
+    }
+  }
 }
 
 function copyEntry(from, to, what) {

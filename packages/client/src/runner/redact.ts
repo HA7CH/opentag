@@ -1,10 +1,16 @@
-const SECRET_PATTERN = /(api[_-]?key|token|secret|password|authorization|bearer)(=|\s*[:=]\s*)([^\s"',}]+)/gi;
+const JSON_SECRET_FIELD =
+  /("[^"]*(?:api[_-]?key|key|token|secret|password|authorization)[^"]*"\s*:\s*")((?:\\.|[^"\\])+)(")/gi;
+const SECRET_PATTERN =
+  /(api[_-]?key|token|secret|password|authorization|bearer)(=|\s*[:=]\s*)((?:bearer\s+)?[^\s"',}]+)/gi;
+const BEARER_STANDALONE = /\b(bearer)\s+([^\s"',}]+)/gi;
 const KEY_LIKE = /\b(?:sk-|rk-|ghp_|xox[baprs]-)[A-Za-z0-9_-]{8,}\b/g;
 const ENV_ASSIGNMENT = /\b([A-Z][A-Z0-9_]*(?:KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL))\s*=\s*([^\s]+)/g;
 
 function redactText(value: string): string {
   return value
+    .replace(JSON_SECRET_FIELD, "$1[redacted]$3")
     .replace(SECRET_PATTERN, "$1$2[redacted]")
+    .replace(BEARER_STANDALONE, (_match, scheme: string) => `${scheme} [redacted]`)
     .replace(KEY_LIKE, "[redacted]")
     .replace(ENV_ASSIGNMENT, "$1=[redacted]");
 }

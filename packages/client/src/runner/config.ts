@@ -72,7 +72,13 @@ function filterSettingsDocument(value: unknown, providers: ReadonlySet<string>):
 }
 
 function filterDocument(name: string, raw: string, providers: ReadonlySet<string>): string {
-  const parsed: unknown = JSON.parse(raw);
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    // Filename only: Node parse errors can quote raw source fragments, and the source may be a credential.
+    fail(`${name} is not valid JSON`);
+  }
   const next =
     name === "auth.json"
       ? filterProviderObject(parsed, providers)
