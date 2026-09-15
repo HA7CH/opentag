@@ -59,6 +59,11 @@ rejects every symlink, and refuses credential filenames such as `auth.json` even
 directory. The Docker context is that staged directory, not the checkout. Frozen `pnpm install`
 runs before any staging/prod `prepare-cli-release` rewrite so the lockfile still matches.
 
+The Node version must have a reviewed image digest in `scripts/runner/pins.mjs`; a version bump
+without that mapping fails before building. Runtime dependency conflicts support one level of
+nesting; a conflict beneath an already nested package fails explicitly instead of shipping the
+wrong version.
+
 Image labels record source SHA, dirty flag, CLI/version, and tool lock. `docker inspect` reports
 the image ID after a successful build.
 

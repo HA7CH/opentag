@@ -57,6 +57,9 @@ node scripts/runner/cli.mjs build --channel dev --allow-dirty true --tag opentag
 checkout。frozen `pnpm install` 必须发生在 staging/prod 的 `prepare-cli-release` 改写之前，以免
 lockfile 失配。
 
+Node 版本必须在 `scripts/runner/pins.mjs` 中对应已审阅的镜像摘要；缺少映射的版本升级会在构建前失败。
+运行时依赖冲突支持一层嵌套；若已嵌套包还需要再次嵌套冲突依赖，会明确失败，避免交付错误版本。
+
 镜像 label 记录 source SHA、dirty 标记、CLI/version 和 tool lock。构建成功后用 `docker inspect`
 读取 image ID。
 

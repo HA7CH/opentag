@@ -58,8 +58,8 @@ export function scanBarePackageImports(directory) {
 /** Walks the installed graph from the scanned roots, one canonical root per package name. */
 export function collectInstalledClosure({ fromManifestPath, roots }) {
   // A same-name package resolving to a different canonical root is never silently collapsed: the
-  // later resolution is nested under the referring package (pnpm/Node semantics), and a genuine
-  // slot conflict fails closed.
+  // later resolution is nested under the referring package (pnpm/Node semantics). A nested slot
+  // under a nested referrer cannot be placed correctly and fails closed.
   const byName = new Map();
   const nested = new Map();
   const manifestNames = new Map();
@@ -77,16 +77,25 @@ export function collectInstalledClosure({ fromManifestPath, roots }) {
     }
   };
   // Returns true when the job was already covered; otherwise records it (top-level or nested).
-  const recordJob = (job, queue) => {
+  const recordJob = (job, queue, entriesByManifest) => {
     const resolved = resolveInstalledDependencyPackage(job.from, job.name);
     const recorded = byName.get(job.name);
     if (!recorded) {
       byName.set(job.name, resolved);
+      entriesByManifest.set(resolved.manifestPath, resolved);
       enqueueDeps(queue, resolved);
       return;
     }
     if (recorded.root === resolved.root && recorded.manifest.version === resolved.manifest.version) return;
-    const parent = referrerName(job.from);
+    const referrer = entriesByManifest.get(job.from);
+    if (referrer?.parent) {
+      // A nested slot under a nested referrer would land on the wrong top-level package and the
+      // real referrer would silently resolve the top-level version instead. Fail closed.
+      fail(
+        `dependency ${job.name} needs a nested slot under nested referrer ${referrer.name} (${referrer.parent}/${referrer.name}), which the assembler cannot place correctly`,
+      );
+    }
+    const parent = referrer?.name ?? referrerName(job.from);
     const slot = `${parent}/${job.name}`;
     const existing = nested.get(slot);
     if (existing && (existing.root !== resolved.root || existing.manifest.version !== resolved.manifest.version)) {
@@ -95,12 +104,15 @@ export function collectInstalledClosure({ fromManifestPath, roots }) {
       );
     }
     if (existing) return;
-    nested.set(slot, { ...resolved, parent });
+    const entry = { ...resolved, parent };
+    nested.set(slot, entry);
+    entriesByManifest.set(resolved.manifestPath, entry);
     enqueueDeps(queue, resolved);
   };
   const queue = roots.map((name) => ({ from: fromManifestPath, name }));
+  const entriesByManifest = new Map();
   while (queue.length > 0) {
-    recordJob(queue.shift(), queue);
+    recordJob(queue.shift(), queue, entriesByManifest);
   }
   return {
     packages: [...byName.values()].sort((left, right) => left.name.localeCompare(right.name)),

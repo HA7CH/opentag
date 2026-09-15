@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -275,4 +275,65 @@ describe("runner acceptance cancel contract", () => {
     },
     30_000,
   );
+});
+
+describe("runner acceptance disposable Context Tree", () => {
+  it("prepares, verifies, and cleans a real disposable tree with the exact skill argument contract", async () => {
+    const workspace = await mkdtemp(join(tmpdir(), "opentag-runner-ctacc-"));
+    directories.push(workspace);
+    const report = await runRunnerAcceptance({
+      mode: "offline",
+      piHome: workspace,
+      runtimeHome: workspace,
+      sessionDirectory: join(workspace, "sessions"),
+      workspace,
+      probeTools: async () => [{ name: "git", ok: true, detail: "git version 2.39.5" }],
+    });
+    expect(report.offline).toBe("passed");
+    expect(report.model).toBe("skipped");
+    expect(report.failed).toBe(false);
+
+    const skillsEvent = report.events.find((item) => item.name === "skills");
+    expect(skillsEvent?.status).toBe("passed");
+    expect(skillsEvent?.detail?.split(",").sort()).toEqual([...CONTEXT_TREE_PACKAGED_SKILL_DIRECTORIES].sort());
+
+    // Explicit skill loading: --no-skills first, then six individual --skill <dir> arguments.
+    const args = report.skillArguments ?? [];
+    expect(args[0]).toBe("--no-skills");
+    const skillDirs = args.filter((_, index) => index > 0 && args[index - 1] === "--skill");
+    for (const name of CONTEXT_TREE_PACKAGED_SKILL_DIRECTORIES) {
+      expect(skillDirs.some((dir) => dir.endsWith(`/${name}`))).toBe(true);
+    }
+    expect(report.events.find((item) => item.name === "skills-args")?.detail).toContain("--no-skills");
+    expect(report.events.some((item) => item.name === "tool-skills")).toBe(true);
+
+    // The disposable tree/account home and seed are removed by the acceptance cleanup.
+    const treeEvent = report.events.find((item) => item.name === "context-tree");
+    expect(treeEvent?.status).toBe("passed");
+    expect(treeEvent?.detail).toBeTruthy();
+    await expect(stat(treeEvent?.detail as string)).rejects.toMatchObject({ code: "ENOENT" });
+  }, 60_000);
+
+  it("blocks real mode before any model work when offline checks fail", async () => {
+    const workspace = await mkdtemp(join(tmpdir(), "opentag-runner-offlinefail-"));
+    directories.push(workspace);
+    const report = await runRunnerAcceptance({
+      mode: "real",
+      piHome: workspace,
+      runtimeHome: workspace,
+      sessionDirectory: join(workspace, "sessions"),
+      workspace,
+      factory: fakeFactory({ credential: true }),
+      probeTools: async () => [{ name: "git", ok: false, detail: "git missing" }],
+      assembleSkills: async () => fakeAssembledSkills(workspace),
+    });
+    expect(report.offline).toBe("failed");
+    expect(report.model).toBe("failed");
+    expect(report.failed).toBe(true);
+    expect(
+      report.events.some(
+        (item) => item.name === "model" && item.detail?.includes("offline checks must pass before real mode"),
+      ),
+    ).toBe(true);
+  });
 });

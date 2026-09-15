@@ -25,6 +25,29 @@ test("pins come from existing Node/pnpm/CLI coordinates and do not use latest", 
   assert.equal(runnerResourceLimits().memoryBytes, 1_073_741_824);
 });
 
+test("a Node pin without its reviewed digest fails before any build", () => {
+  const current = nodeImageReference();
+  assert.match(
+    current,
+    /^node:24\.19\.0-bookworm@sha256:107ceb6ad85808049dccef12414bf17b08eceb299eaf755c0339dc5fc8958d6b$/,
+  );
+  // A version bump with no reviewed digest mapping is refused even with a well-formed digest.
+  const bumped = {
+    ...RUNNER_PINS,
+    nodeVersion: "v24.20.0",
+    image: { ...RUNNER_PINS.image, tag: "24.20.0-bookworm", digest: `sha256:${"1".repeat(64)}` },
+  };
+  assert.throws(() => nodeImageReference(bumped), /no reviewed linux\/amd64 image digest/);
+  // A drifted digest for the reviewed version is refused as well.
+  const drifted = {
+    ...RUNNER_PINS,
+    image: { ...RUNNER_PINS.image, digest: `sha256:${"0".repeat(64)}` },
+  };
+  assert.throws(() => nodeImageReference(drifted), /drifted from the reviewed digest/);
+  // The current v24.19.0 digest stays unchanged.
+  assert.equal(RUNNER_PINS.image.digest, "sha256:107ceb6ad85808049dccef12414bf17b08eceb299eaf755c0339dc5fc8958d6b");
+});
+
 test("Pi lockfile pins 0.84.2 outside the workspace lock", async () => {
   const lock = JSON.parse(await readFile(join(repoRoot, "scripts/runner/pi/package-lock.json"), "utf8"));
   assert.equal(lock.packages["node_modules/@earendil-works/pi-coding-agent"].version, "0.84.2");

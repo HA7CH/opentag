@@ -53,4 +53,15 @@ describe("runner identity", () => {
       }),
     ).toThrow(/toolLock Pi coordinates/);
   });
+
+  it("rejects an unknown channel, a schema mismatch, and non-matching versions", () => {
+    expect(() => parseRunnerIdentity({ ...identity, channel: "canary" })).toThrow(
+      /channel must be dev, staging, or prod/,
+    );
+    expect(() => parseRunnerIdentity({ ...identity, schemaVersion: 2 })).toThrow(/schemaVersion must be/);
+    expect(() => parseRunnerIdentity(null)).toThrow(/must be an object/);
+    expect(() => assertRunnerReleaseVersion("dev", "0.0.5", "0.0.6")).toThrow(/dev version 0.0.6 must match/);
+    expect(() => assertRunnerReleaseVersion("prod", "0.0.5", "0.0.6")).toThrow(/must match source version/);
+    expect(() => assertRunnerReleaseVersion("staging", "0.0.5-beta", "0.0.6-staging.1.1")).toThrow(/stable/);
+  });
 });

@@ -22,9 +22,29 @@ if (!pnpmVersion) throw new Error("root packageManager must be pnpm@<version>");
 
 const NODE_MAJOR_MINOR_PATCH = nodeVersion.replace(/^v/, "");
 const IMAGE_TAG = `${NODE_MAJOR_MINOR_PATCH}-bookworm`;
-const IMAGE_DIGEST = "sha256:107ceb6ad85808049dccef12414bf17b08eceb299eaf755c0339dc5fc8958d6b";
+
+/**
+ * Reviewed linux/amd64 digests per Node version. A Node pin bump in node-version.txt without an
+ * accompanying reviewed digest fails here, before any build — never silently relabel an old
+ * digest as a new runtime.
+ */
+const REVIEWED_NODE_IMAGE_DIGESTS = Object.freeze({
+  "24.19.0": "sha256:107ceb6ad85808049dccef12414bf17b08eceb299eaf755c0339dc5fc8958d6b",
+});
+
+function reviewedNodeDigest(version) {
+  const normalized = version.replace(/^v/, "");
+  const digest = REVIEWED_NODE_IMAGE_DIGESTS[normalized];
+  if (!digest) {
+    throw new Error(
+      `Node ${normalized} has no reviewed linux/amd64 image digest; add one to REVIEWED_NODE_IMAGE_DIGESTS in scripts/runner/pins.mjs before building`,
+    );
+  }
+  return digest;
+}
+
 if (!/^v?\d+\.\d+\.\d+$/.test(nodeVersion)) throw new Error(`invalid Node pin ${nodeVersion}`);
-if (IMAGE_TAG !== `${NODE_MAJOR_MINOR_PATCH}-bookworm`) throw new Error("Node image tag drifted from node-version.txt");
+const IMAGE_DIGEST = reviewedNodeDigest(nodeVersion);
 
 /** Host/OpenTag Pi is `@earendil-works/pi-coding-agent@0.84.2`; mariozechner 0.84.2 is unpublished. */
 export const PI_PACKAGE = "@earendil-works/pi-coding-agent";
@@ -70,6 +90,10 @@ export function nodeImageReference(pins = RUNNER_PINS) {
     throw new Error("Node image tag does not match scripts/portable/node-version.txt");
   }
   if (!/^sha256:[0-9a-f]{64}$/.test(pins.image.digest)) throw new Error("Node image digest is not a sha256 pin");
+  const reviewed = reviewedNodeDigest(pins.nodeVersion);
+  if (pins.image.digest !== reviewed) {
+    throw new Error(`Node ${pins.nodeVersion} image digest drifted from the reviewed digest`);
+  }
   return `${pins.image.name}:${pins.image.tag}@${pins.image.digest}`;
 }
 

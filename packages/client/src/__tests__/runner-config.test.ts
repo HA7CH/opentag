@@ -1,8 +1,8 @@
-import { lstat, mkdir, mkdtemp, readFile, symlink, writeFile } from "node:fs/promises";
+import { lstat, mkdir, mkdtemp, readdir, readFile, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { copyIsolatedPiConfig, PI_CONFIG_WHITELIST } from "../runner/config.js";
+import { copyIsolatedPiConfig, PI_CONFIG_WHITELIST, removeIsolatedPiConfig } from "../runner/config.js";
 
 const directories: string[] = [];
 afterEach(async () => {
@@ -123,5 +123,28 @@ describe("isolated Pi config copy", () => {
     );
     // The rejected copy must not leave a partial destination behind.
     await expect(lstat(destination)).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("skips whitelisted documents that are absent and removes copies on demand", async () => {
+    const root = await temp("opentag-pi-cfg-sparse-");
+    const source = join(root, "src");
+    await mkdir(source);
+    await writeFile(join(source, "auth.json"), `${JSON.stringify({ deepseek: { type: "api_key", key: "x" } })}\n`);
+    const destination = join(root, "dst");
+    await copyIsolatedPiConfig({ destination, source, providers: ["deepseek"] });
+    // Only auth.json existed; the other whitelisted names are skipped, not invented.
+    await expect(readdir(destination)).resolves.toEqual(["auth.json"]);
+    await removeIsolatedPiConfig(destination);
+    await expect(lstat(destination)).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("rejects a destination whose parent does not exist", async () => {
+    const root = await temp("opentag-pi-cfg-noparent-");
+    const source = join(root, "src");
+    await mkdir(source);
+    await writeFile(join(source, "auth.json"), `${JSON.stringify({ deepseek: { type: "api_key", key: "x" } })}\n`);
+    await expect(
+      copyIsolatedPiConfig({ destination: join(root, "missing", "dst"), source, providers: ["deepseek"] }),
+    ).rejects.toThrow(/existing real directory/);
   });
 });

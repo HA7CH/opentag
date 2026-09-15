@@ -176,6 +176,40 @@ test("conflicting resolutions nest under the referrer instead of silently collap
   }
 });
 
+test("a nested slot under a nested referrer fails closed instead of misplacing", async () => {
+  // app -> b@1, c, d@1; c -> b@2; b@2 -> d@2. The d@2 slot belongs to the nested b@2, not to
+  // top-level b@1; the old name-keyed placement would have hidden d@2 under b@1 while the real
+  // referrer silently resolved top-level d@1.
+  const { root, cleanup } = await fixture();
+  try {
+    await writeFile(join(root, "pnpm-lock.yaml"), "lockfileVersion: '9.0'\n");
+    await writeFile(
+      join(root, "package.json"),
+      '{"name":"app","version":"1.0.0","dependencies":{"b":"1.0.0","c":"1.0.0","d":"1.0.0"}}',
+    );
+    const topB = join(root, "node_modules", "b");
+    const pkgC = join(root, "node_modules", "c");
+    const topD = join(root, "node_modules", "d");
+    const nestedB = join(pkgC, "node_modules", "b");
+    const nestedD = join(pkgC, "node_modules", "d");
+    await mkdir(topB, { recursive: true });
+    await mkdir(topD, { recursive: true });
+    await mkdir(nestedB, { recursive: true });
+    await mkdir(nestedD, { recursive: true });
+    await writeFile(join(topB, "package.json"), '{"name":"b","version":"1.0.0"}');
+    await writeFile(join(topD, "package.json"), '{"name":"d","version":"1.0.0"}');
+    await writeFile(join(pkgC, "package.json"), '{"name":"c","version":"1.0.0","dependencies":{"b":"2.0.0"}}');
+    await writeFile(join(nestedB, "package.json"), '{"name":"b","version":"2.0.0","dependencies":{"d":"2.0.0"}}');
+    await writeFile(join(nestedD, "package.json"), '{"name":"d","version":"2.0.0"}');
+    assert.throws(
+      () => collectInstalledClosure({ fromManifestPath: join(root, "package.json"), roots: ["b", "c", "d"] }),
+      /nested referrer/,
+    );
+  } finally {
+    await cleanup();
+  }
+});
+
 test("unsafe publish files entries are rejected and npm-always entries ship", async () => {
   const { root, cleanup } = await fixture();
   try {
