@@ -101,8 +101,10 @@ HOME, no symlinks, no `!` shell-command indirections), stages a filtered copy, a
 that copy via `docker cp` plus a one-shot root `chown`/`chmod` exec into a fresh guard container —
 never a whole `HOME` mount. `models.json` is rebuilt from the recognized top-level fields
 `models` and `providers` only, so unknown fields never reach the container; malformed shapes fail
-with fixed messages. The guard runs `sleep infinity` as PID 1 until harness cleanup removes it;
-the real acceptance command has a separate 30-minute timeout. It asserts a confirmed cancellation of a live Bash fixture child
+with fixed messages. The guard runs with Docker `--init` so PID 1 is an init that reaps orphaned
+children (a zombie is not a gone process), keeping `sleep infinity` alive until harness cleanup
+removes it; the image's own default entrypoint for future long-lived E3 work is unchanged. The
+real acceptance command has a separate 30-minute timeout. It asserts a confirmed cancellation of a live Bash fixture child
 (shared tracked Pi PID set), and removes the container afterwards with daemon-confirmed removal.
 
 Timing fields are distinct: `startupMs` measures a fresh container plus Runner CLI startup

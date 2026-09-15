@@ -35,6 +35,9 @@ test("guard outlives the real accept budget, starts through the entrypoint, and 
       const args = JSON.parse((await readFile(log, "utf8")).trim());
       const command = args.slice(args.indexOf("opentag-runner:test") + 1);
       assert.deepEqual(command, ["sleep", "infinity"]);
+      // Docker init owns PID 1 and reaps orphaned children; a zombie is not a gone process.
+      assert.ok(args.includes("--init"), "guard must run with Docker --init so orphans are reaped");
+      assert.ok(args.indexOf("--init") < args.indexOf("opentag-runner:test"));
       assert.ok(Number.isFinite(REAL_ACCEPT_TIMEOUT_MS) && REAL_ACCEPT_TIMEOUT_MS > 0);
       const keepaliveMs = command[1] === "infinity" ? Infinity : Number(command[1]) * 1000;
       assert.ok(keepaliveMs >= REAL_ACCEPT_TIMEOUT_MS, "keepalive covers the entire accept budget");

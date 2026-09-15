@@ -92,8 +92,10 @@ harness 始终使用 `--cpus=1 --memory=1g --memory-swap=1g`，并断言 inspect
 （白名单常规文件、选定 provider 的文档、安全 settings 键、拒绝整个 HOME、symlink 与 `!`
 shell 命令间接寻址），生成过滤后的暂存副本，并只把该副本通过 `docker cp` 加一次性 root
 `chown`/`chmod` 注入全新 guard 容器——绝不整体挂载 `HOME`。`models.json` 只由受认可的顶层字段
-`models` 与 `providers` 重建，未知字段绝不进入容器；畸形结构以固定消息失败。guard 容器以
-`sleep infinity` 作为 PID 1 持续运行，直到 harness 清理时删除；真实验收命令单独设置 30 分钟超时。
+`models` 与 `providers` 重建，未知字段绝不进入容器；畸形结构以固定消息失败。
+guard 容器以 Docker `--init` 运行，由 PID 1 回收孤儿子进程，并以
+`sleep infinity` 保活，直到 harness 清理时删除；镜像自身面向未来长时 E3 的默认 entrypoint 并
+未改变。真实验收命令单独设置 30 分钟超时。
 验收断言一个存活 Bash fixture 子进程被确认取消（共享的 Pi PID 跟踪集），随后删除
 容器并以 daemon 确认删除结果。
 
