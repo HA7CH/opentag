@@ -3,6 +3,7 @@ import {
   accountComputerConnectCodePath,
   HTTP_PATHS,
   PROVIDER_READINESS_V1_HEADER,
+  PROVIDER_READINESS_V2_HEADER,
   RUNTIME_PROTOCOL_V2,
   withComputerRuntimeProviderSupport,
 } from "@opentag/shared";
@@ -699,6 +700,22 @@ describe("Computer connection persistence", () => {
           providerReadiness: [
             { provider: "codex", status: "checking", observedAt: null },
             { provider: "claude-code", status: "checking", observedAt: null },
+          ],
+        });
+        const negotiatedV2 = await app.inject({
+          method: "GET",
+          url: HTTP_PATHS.accountComputers,
+          headers: {
+            authorization: `Bearer ${account.accessToken}`,
+            [PROVIDER_READINESS_V1_HEADER]: "1",
+            [PROVIDER_READINESS_V2_HEADER]: "2",
+          },
+        });
+        expect(negotiatedV2.json().computers[0]).toMatchObject({
+          providerReadiness: [
+            { provider: "codex", status: "checking", observedAt: null },
+            { provider: "claude-code", status: "checking", observedAt: null },
+            { provider: "pi", status: "checking", observedAt: null },
           ],
         });
       } finally {

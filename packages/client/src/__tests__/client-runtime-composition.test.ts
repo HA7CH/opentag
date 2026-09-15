@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { chmod, mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
@@ -17,6 +17,8 @@ import type { AgentRuntime, AgentRuntimeFactory } from "../agent-runtime/types.j
 import { createLogger } from "../observability/logger.js";
 import { claudeCodeRuntimePolicy, validateClaudeCodeRuntimePolicy } from "../providers/claude-code/runtime-policy.js";
 import { CODEX_AGENT_RUNTIME_APP_SERVER_ARGS } from "../providers/codex/agent-runtime.js";
+import { PiAgentRuntimeFactory } from "../providers/pi/agent-runtime.js";
+import { type PiRpcClient, PiRpcError } from "../providers/pi/rpc-wire.js";
 import { AgentRuntimeProviderRegistry } from "../runtime/agent-runtime-provider-registry.js";
 import {
   ComposedClientRuntime,
@@ -29,7 +31,9 @@ import {
   resolveCodexHome,
   resolvedClaudeCodeFactory,
   resolvedCodexFactory,
+  resolvePiHome,
 } from "../runtime/client-runtime-composition.js";
+import * as contextTreeModule from "../runtime/context-tree.js";
 import { resetLoginShellPathDirsCache } from "../runtime/login-shell-path.js";
 import {
   collectOutgoingReplyReceipts,
@@ -50,6 +54,182 @@ afterEach(async () => {
 });
 
 describe("createClientRuntime production composition", () => {
+  it("can initialize Pi without the optional packaged Context Tree skills", async () => {
+    const packageResolver = vi.spyOn(contextTreeModule, "resolveContextTreePackage").mockReturnValue(undefined);
+    cleanup.push(async () => {
+      packageResolver.mockRestore();
+    });
+    const home = await temporaryDirectory("opentag-pi-no-context-package-");
+    const connection = runtimeConnection();
+    const runtime = await createClientRuntime(connection, {
+      clientVersion: "0.0.1",
+      environment: { HOME: home, PATH: process.env.PATH },
+      factory: new PiAgentRuntimeFactory({
+        probeRunner: async () => ({ credential: true, rpc: true, version: "0.84.2" }),
+      }),
+      home,
+    });
+    try {
+      await expect(
+        runtime.reconciler.reconcile(reconcileRequest(connection.installationId, { ...snapshot(), provider: "pi" })),
+      ).resolves.toMatchObject({ status: "ready" });
+      expect((await runtime.runtimeManager.ensureRuntime("session-1")).binding?.providerId).toBe("pi");
+    } finally {
+      runtime.stop();
+      await runtime.run();
+    }
+  });
+
+  it.skipIf(process.platform === "win32")(
+    "forwards packaged Context Tree skills onto the default Pi RPC spawn",
+    async () => {
+      const home = await temporaryDirectory("opentag-pi-packaged-skills-");
+      const skillsPath = resolve(home, "context-tree-package", "skills");
+      const { connection, logPath, runtime } = await composePiRuntimeWithPackagedSkills({
+        home,
+        skillsPath,
+      });
+      try {
+        await expect(
+          runtime.reconciler.reconcile(reconcileRequest(connection.installationId, { ...snapshot(), provider: "pi" })),
+        ).resolves.toMatchObject({ status: "ready" });
+        const agent = await runtime.runtimeManager.ensureRuntime("session-1");
+        // The recording executable exits after capturing argv; it never runs a model.
+        await expect(
+          agent.prompt({ runId: "packaged-skills", input: { items: [{ type: "text", text: "hello" }] } }),
+        ).resolves.toMatchObject({ status: "failed", error: { code: "provider_error" } });
+        expect(rpcLaunchArgs(await readJsonlArgs(logPath))?.slice(0, 2)).toEqual(["--skill", skillsPath]);
+      } finally {
+        runtime.stop();
+        await runtime.run();
+      }
+    },
+  );
+
+  it.skipIf(process.platform === "win32")(
+    "does not pass --skill when the packaged Context Tree is absent",
+    async () => {
+      const home = await temporaryDirectory("opentag-pi-absent-package-skills-");
+      const { connection, logPath, runtime } = await composePiRuntimeWithPackagedSkills({ home });
+      try {
+        await expect(
+          runtime.reconciler.reconcile(reconcileRequest(connection.installationId, { ...snapshot(), provider: "pi" })),
+        ).resolves.toMatchObject({ status: "ready" });
+        const agent = await runtime.runtimeManager.ensureRuntime("session-1");
+        // The recording executable exits after capturing argv; it never runs a model.
+        await expect(
+          agent.prompt({ runId: "absent-skills", input: { items: [{ type: "text", text: "hello" }] } }),
+        ).resolves.toMatchObject({ status: "failed", error: { code: "provider_error" } });
+        const rpcArgs = rpcLaunchArgs(await readJsonlArgs(logPath));
+        expect(rpcArgs).toEqual(expect.arrayContaining(["--mode", "rpc"]));
+        expect(rpcArgs?.includes("--skill")).toBe(false);
+      } finally {
+        runtime.stop();
+        await runtime.run();
+      }
+    },
+  );
+
+  it("recovers a Pi binding when Client restarts before the first prompt", async () => {
+    const home = await temporaryDirectory("opentag-pi-unmaterialized-");
+    const connection = runtimeConnection();
+    const factory = new PiAgentRuntimeFactory({
+      probeRunner: async () => ({ credential: true, rpc: true, version: "0.84.2" }),
+    });
+    const options = { clientVersion: "0.0.1", environment: { HOME: home, PATH: process.env.PATH }, factory, home };
+    const piSnapshot: EffectiveRuntimeSnapshot = { ...snapshot(), provider: "pi" };
+    const first = await createClientRuntime(connection, options);
+    let originalBinding: AgentRuntime["binding"];
+    try {
+      await first.reconciler.reconcile(reconcileRequest(connection.installationId, piSnapshot));
+      originalBinding = (await first.runtimeManager.ensureRuntime("session-1")).binding;
+      expect(originalBinding?.providerId).toBe("pi");
+    } finally {
+      first.stop();
+      await first.run();
+    }
+    const restartedConnection = runtimeConnection(undefined, undefined, connection.installationId);
+    const restarted = await createClientRuntime(restartedConnection, options);
+    try {
+      await restarted.reconciler.reconcile(reconcileRequest(connection.installationId, piSnapshot));
+      const recovered = await restarted.runtimeManager.ensureRuntime("session-1");
+      expect(recovered.binding?.providerId).toBe("pi");
+      expect(recovered.binding).toEqual(originalBinding);
+    } finally {
+      restarted.stop();
+      await restarted.run();
+    }
+  });
+
+  it("resumes the same Pi UUID after Client restarts mid-first-prompt before an assistant", async () => {
+    const home = await temporaryDirectory("opentag-pi-interrupt-restart-");
+    const connection = runtimeConnection();
+    const sessionId = "11111111-1111-4111-8111-111111111111";
+    const firstPath = `/sessions/${sessionId}-first.jsonl`;
+    const secondPath = `/sessions/${sessionId}-second.jsonl`;
+    const secondHash = createHash("sha256").update(secondPath).digest("hex");
+    let launches = 0;
+    const factory = new PiAgentRuntimeFactory({
+      createSessionId: () => sessionId,
+      probeRunner: async () => ({ credential: true, rpc: true, version: "0.84.2" }),
+      createClient: () => {
+        launches += 1;
+        return launches === 1
+          ? new CompositionPiRpcClient(sessionId, firstPath, "interrupt")
+          : new CompositionPiRpcClient(sessionId, secondPath, "complete");
+      },
+    });
+    const options = { clientVersion: "0.0.1", environment: { HOME: home, PATH: process.env.PATH }, factory, home };
+    const piSnapshot: EffectiveRuntimeSnapshot = { ...snapshot(), provider: "pi" };
+
+    const first = await createClientRuntime(connection, options);
+    try {
+      await first.reconciler.reconcile(reconcileRequest(connection.installationId, piSnapshot));
+      const agent = await first.runtimeManager.ensureRuntime("session-1");
+      await expect(
+        agent.prompt({ runId: "interrupted", input: { items: [{ type: "text", text: "hello" }] } }),
+      ).resolves.toMatchObject({ status: "failed", error: { code: "provider_error" } });
+      expect((await first.bindingStore.read("agent-1", "session-1"))?.runtimeBinding).toEqual({
+        providerId: "pi",
+        schemaVersion: 1,
+        payload: { sessionId },
+      });
+    } finally {
+      first.stop();
+      await first.run();
+    }
+
+    const restarted = await createClientRuntime(
+      runtimeConnection(undefined, undefined, connection.installationId),
+      options,
+    );
+    try {
+      await restarted.reconciler.reconcile(reconcileRequest(connection.installationId, piSnapshot));
+      const recovered = await restarted.runtimeManager.ensureRuntime("session-1");
+      expect(recovered.binding).toEqual({
+        providerId: "pi",
+        schemaVersion: 1,
+        payload: { sessionId },
+      });
+      await expect(
+        recovered.prompt({ runId: "recovered", input: { items: [{ type: "text", text: "hello" }] } }),
+      ).resolves.toMatchObject({ status: "completed" });
+      expect(recovered.binding).toEqual({
+        providerId: "pi",
+        schemaVersion: 1,
+        payload: { sessionId, sessionFileHash: secondHash },
+      });
+      expect((await restarted.bindingStore.read("agent-1", "session-1"))?.runtimeBinding).toEqual({
+        providerId: "pi",
+        schemaVersion: 1,
+        payload: { sessionId, sessionFileHash: secondHash },
+      });
+    } finally {
+      restarted.stop();
+      await restarted.run();
+    }
+  });
+
   it("hands managed Lark receipts into durable reporting before cleaning the run", async () => {
     const home = await temporaryDirectory("opentag-client-outgoing-composition-");
     const connection = runtimeConnection();
@@ -337,6 +517,15 @@ describe("createClientRuntime production composition", () => {
     expect(resolveCodexHome({})).toBe(resolve(homedir(), ".codex"));
   });
 
+  it("uses HOME when PI_CODING_AGENT_DIR is absent", () => {
+    expect(resolvePiHome({ HOME: "/provider-home" })).toBe(resolve("/provider-home/.pi/agent"));
+    expect(resolvePiHome({ PI_CODING_AGENT_DIR: "/explicit-pi-home", HOME: "/ignored" })).toBe(
+      resolve("/explicit-pi-home"),
+    );
+    expect(resolvePiHome()).toEqual(expect.any(String));
+    expect(resolvePiHome({})).toBe(resolve(homedir(), ".pi", "agent"));
+  });
+
   it("fails closed for unregistered providers and caller cancellation during initial readiness", async () => {
     const home = await temporaryDirectory("opentag-client-composition-fences-");
     await expect(
@@ -344,7 +533,7 @@ describe("createClientRuntime production composition", () => {
         clientVersion: "0.0.1",
         codexHome: resolve(home, "wrong-provider-home"),
         environment: {},
-        factory: readyFactory("pi"),
+        factory: readyFactory("unreviewed"),
         home,
       }),
     ).rejects.toThrow("does not register the unreviewed provider");
@@ -1996,13 +2185,17 @@ printf '__OT_SHELL_PATH____OT_SHELL_PATH____OT_SHELL_ENV__\n\n__OT_SHELL_ENV__'
   });
 });
 
-function runtimeConnection(serverUrl = "http://127.0.0.1:3000", now?: () => number): RuntimeConnection {
+function runtimeConnection(
+  serverUrl = "http://127.0.0.1:3000",
+  now?: () => number,
+  computerId: string = randomUUID(),
+): RuntimeConnection {
   return new RuntimeConnection({
     arch: "arm64",
     clientVersion: "0.0.1",
     computer: {
       version: 2,
-      computerId: randomUUID(),
+      computerId,
       serverUrl,
     },
     displayName: "test",
@@ -2174,6 +2367,142 @@ async function composeClaudeCodeRuntime(options: {
     pathCapture: await readFile(pathCapturePath, "utf8"),
     runtime,
   };
+}
+
+const PI_HELP_TOKENS =
+  "--mode rpc --session-id --session-dir --offline --no-extensions --no-skills --no-prompt-templates --no-themes --no-context-files --no-approve --tools --model --thinking --append-system-prompt --name";
+const PI_LIST_MODELS_TABLE = [
+  "provider  model            context  max-out  thinking  images",
+  "fixture   configured-model  128K     8K       no        no",
+].join("\n");
+
+async function writeRecordingPiCommand(home: string, logPath: string): Promise<string> {
+  const command = resolve(home, "pi-fixture");
+  await writeFile(
+    command,
+    `#!${process.execPath}
+import { appendFileSync } from "node:fs";
+const args = process.argv.slice(2);
+appendFileSync(${JSON.stringify(logPath)}, JSON.stringify(args) + ${JSON.stringify("\n")});
+if (args[0] === "--version") {
+  console.log("0.84.2");
+  process.exit(0);
+}
+if (args.includes("--help")) {
+  console.log(${JSON.stringify(PI_HELP_TOKENS)});
+  process.exit(0);
+}
+if (args.includes("--list-models")) {
+  console.log(${JSON.stringify(PI_LIST_MODELS_TABLE)});
+  process.exit(0);
+}
+process.exit(0);
+`,
+    "utf8",
+  );
+  await chmod(command, 0o755);
+  return command;
+}
+
+async function readJsonlArgs(logPath: string): Promise<string[][]> {
+  try {
+    return (await readFile(logPath, "utf8"))
+      .split("\n")
+      .filter(Boolean)
+      .map((line) => JSON.parse(line) as string[]);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
+    throw error;
+  }
+}
+
+function rpcLaunchArgs(launches: readonly (readonly string[])[]): string[] | undefined {
+  const match = launches.find((args) => args.includes("--mode") && args.includes("rpc"));
+  return match ? [...match] : undefined;
+}
+
+async function composePiRuntimeWithPackagedSkills(options: {
+  readonly home: string;
+  readonly skillsPath?: string;
+}): Promise<{
+  readonly connection: ReturnType<typeof runtimeConnection>;
+  readonly logPath: string;
+  readonly runtime: ComposedClientRuntime;
+}> {
+  const logPath = resolve(options.home, "pi-args.jsonl");
+  const command = await writeRecordingPiCommand(options.home, logPath);
+  const packageResolver = vi.spyOn(contextTreeModule, "resolveContextTreePackage").mockReturnValue(
+    options.skillsPath === undefined
+      ? undefined
+      : {
+          cliPath: resolve(options.home, "context-tree-package", "dist", "cli", "index.mjs"),
+          root: resolve(options.home, "context-tree-package"),
+          skillsPath: options.skillsPath,
+        },
+  );
+  cleanup.push(async () => {
+    packageResolver.mockRestore();
+  });
+  const connection = runtimeConnection();
+  const runtime = await createClientRuntime(connection, {
+    clientVersion: "0.0.1",
+    claudeCodeCommand: resolve(options.home, "missing-claude"),
+    codexCommand: resolve(options.home, "missing-codex"),
+    environment: { HOME: options.home, PATH: process.env.PATH },
+    home: options.home,
+    piCommand: command,
+  });
+  return { connection, logPath, runtime };
+}
+
+class CompositionPiRpcClient implements PiRpcClient {
+  readonly #sessionId: string;
+  readonly #sessionFile: string;
+  readonly #mode: "complete" | "interrupt";
+  readonly #listeners = new Set<(message: Readonly<Record<string, unknown>>) => void>();
+
+  constructor(sessionId: string, sessionFile: string, mode: "complete" | "interrupt") {
+    this.#sessionId = sessionId;
+    this.#sessionFile = sessionFile;
+    this.#mode = mode;
+  }
+
+  async request(command: Readonly<Record<string, unknown>>): Promise<unknown> {
+    if (command.type === "get_state") {
+      return {
+        sessionId: this.#sessionId,
+        sessionFile: this.#sessionFile,
+        messageCount: 0,
+        model: { id: "fixture-model", provider: "fixture" },
+      };
+    }
+    if (command.type !== "prompt") return undefined;
+    if (this.#mode === "interrupt") throw new PiRpcError("command", "interrupted before assistant");
+    const assistant = {
+      role: "assistant",
+      content: [{ type: "text", text: "ok" }],
+      stopReason: "stop",
+    };
+    for (const message of [
+      { type: "agent_start" },
+      { type: "turn_start" },
+      { type: "message_start", message: { role: "assistant", content: [] } },
+      { type: "message_end", message: assistant },
+      { type: "turn_end" },
+      { type: "agent_end", willRetry: false },
+      { type: "agent_settled" },
+    ]) {
+      for (const listener of this.#listeners) listener(message);
+    }
+    return undefined;
+  }
+
+  subscribe(listener: (message: Readonly<Record<string, unknown>>) => void): () => void {
+    this.#listeners.add(listener);
+    return () => this.#listeners.delete(listener);
+  }
+
+  async close(): Promise<void> {}
 }
 
 function readyFactory(
