@@ -192,7 +192,7 @@ export class AgentTurnRunner {
       }
       await runtime.steer({
         expectedRunId: request.expectedTurnId,
-        input: buildAgentInput(request, supplementalContext, owner.request.runtime),
+        input: buildAgentInput(request, supplementalContext, owner.request.runtime, Boolean(turn.reactions)),
       });
     } catch {
       return steerResult(request, "deferred", "steer_state_unknown");
@@ -296,7 +296,7 @@ export class AgentTurnRunner {
       });
       const result = await runtime.prompt({
         runId: owner.turnId,
-        input: buildAgentInput(owner.request, supplementalContext),
+        input: buildAgentInput(owner.request, supplementalContext, undefined, Boolean(turn.reactions)),
         signal,
       });
       turn.phase = "reporting";
@@ -419,6 +419,7 @@ export function buildAgentInput(
   request: DirectImMessageDeliveryRequest | RuntimeImSteerRequest,
   supplementalContext?: string,
   rootRuntime?: EffectiveRuntimeSnapshot,
+  reactionFeedback = false,
 ): AgentInput {
   const runtime = request.type === "im:deliver" ? request.runtime : rootRuntime;
   if (!runtime) throw new Error("A steer input requires the root runtime snapshot");
@@ -449,6 +450,14 @@ export function buildAgentInput(
       target: request.content.providerRef,
       targetLabel: "Current provider reference",
     }),
+    ...(reactionFeedback && provider === "feishu" && !observer
+      ? [
+          "Progress feedback is opt-in per message, including @mentions and private chats. Receiving a message is NOT accepting work.",
+          "First decide whether this message actually calls for your help or reply. If it is ambient human-to-human conversation, a duplicate, an acknowledgement needing no answer, or otherwise does not need your intervention, do not add any progress reaction.",
+          'If you decide to handle or answer it, explicitly claim that source message BEFORE substantive work: load $OPENTAG_PROVIDER_ENV_FILE and use `lark-cli im reactions create` with --params containing its provider message_id and --data containing {"reaction_type":{"emoji_type":"OnIt"}}. This applies without an @mention too. Treat each newly steered message independently; accepting earlier work does not accept all later messages.',
+          "OpenTag will remove your newly created OnIt and add DONE or ERROR when this Turn ends. Do not add those terminal progress reactions yourself. If claiming fails, continue the actual work; do not claim success or blindly retry the reaction.",
+        ]
+      : []),
     `Attention: ${request.attention}`,
     `Attention meaning: ${attentionMeaning}`,
     "Attention does not change provider CLI or credential availability for this Turn.",

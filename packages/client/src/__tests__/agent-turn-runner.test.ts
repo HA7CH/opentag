@@ -1218,15 +1218,31 @@ function credentialEnvironment() {
 
 describe("runtime-owned turn reactions", () => {
   it("drives reactions for a real runner lifecycle and still submits its report", async () => {
-    const fetcher = vi
-      .fn<typeof fetch>()
-      .mockImplementation(async () => new Response(JSON.stringify({ code: 0, data: { reaction_id: "owned" } })));
+    const fetcher = vi.fn<typeof fetch>().mockImplementation(
+      async () =>
+        new Response(
+          JSON.stringify({
+            code: 0,
+            data: {
+              reaction_id: "owned",
+              items: [
+                {
+                  reaction_id: "claim",
+                  action_time: String(Date.now()),
+                  operator: { operator_type: "app", operator_id: "cli_1" },
+                  reaction_type: { emoji_type: "OnIt" },
+                },
+              ],
+            },
+          }),
+        ),
+    );
     vi.stubGlobal("fetch", fetcher);
     try {
       const h = outgoingHarness(true);
       h.runner.start(liveOwner(h.request));
       await h.runner.settled();
-      expect(fetcher.mock.calls.map(([, options]) => options?.method)).toEqual(["POST", "DELETE", "POST"]);
+      expect(fetcher.mock.calls.map(([, options]) => options?.method)).toEqual(["GET", "DELETE", "POST"]);
       expect(h.create).toHaveBeenCalledWith(expect.objectContaining({ outcome: "completed" }));
       expect(h.submit).toHaveBeenCalled();
     } finally {
@@ -1241,11 +1257,40 @@ describe("runtime-owned turn reactions", () => {
       const h = outgoingHarness(true);
       h.runner.start(liveOwner(h.request));
       await h.runner.settled();
-      expect(fetcher).toHaveBeenCalledTimes(2);
+      expect(fetcher).toHaveBeenCalledTimes(1);
       expect(h.create).toHaveBeenCalledWith(expect.objectContaining({ outcome: "completed" }));
       expect(h.submit).toHaveBeenCalled();
     } finally {
       vi.unstubAllGlobals();
     }
+  });
+});
+
+describe("model acceptance instructions", () => {
+  it("asks the model to claim work explicitly and never claims receipt is acceptance", () => {
+    const request = delivery();
+    request.content.providerRef = {
+      provider: "feishu",
+      teamBrand: "feishu",
+      appId: "cli_1",
+      botOpenId: "ou_bot",
+      chatId: "oc_1",
+      messageId: "om_1",
+      chatType: "group",
+    };
+    request.attention = "ambient";
+    const enabled = buildAgentInput(request, undefined, undefined, true);
+    expect(enabled.items[0]).toEqual(
+      expect.objectContaining({ text: expect.stringContaining("Receiving a message is NOT accepting work") }),
+    );
+    expect(enabled.items[0]).toEqual(expect.objectContaining({ text: expect.stringContaining("without an @mention") }));
+    const disabled = buildAgentInput(request);
+    expect(disabled.items[0]).toEqual(
+      expect.objectContaining({ text: expect.not.stringContaining("Progress feedback is opt-in") }),
+    );
+    const observer = buildAgentInput({ ...request, replyRole: "observer" }, undefined, undefined, true);
+    expect(observer.items[0]).toEqual(
+      expect.objectContaining({ text: expect.not.stringContaining("Progress feedback is opt-in") }),
+    );
   });
 });

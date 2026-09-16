@@ -4,13 +4,13 @@ This fork adds optional runtime-owned progress reactions to OpenTag v0.0.5. It i
 
 Set `OPENTAG_FEISHU_TURN_REACTIONS=1` in the OpenTag daemon environment and restart it after active turns finish. Omit the variable to preserve upstream behavior. This option applies to Feishu/Lark messages owned by this computer; it does not enable Slack reactions.
 
-- `OnIt`: credentials are ready and the turn is starting or processing.
+- `OnIt`: the model decided to help or answer and explicitly claimed this message through the native CLI. Receipt alone creates no reaction.
 - `DONE`: the model turn ended normally. This is not proof that every business objective was achieved or that a reply was delivered.
 - `ERROR`: the turn failed, was cancelled, or has an unknown outcome.
 
-A successful steer gets the same feedback. Repeated message IDs within a turn are deduplicated. Observer copies never react. Ordinary ambient deliveries owned by the session do react, even when the model chooses not to send a reply.
+The model decides separately for each message, including successful steers, mentions, private chats, and ambient group messages. Repeated IDs within a turn are deduplicated. Observer copies never react. Unclaimed messages never receive DONE or ERROR. At turn completion, the client checks for a recent OnIt belonging to this bot and only finalizes that claim. Other actors and old reactions are left alone.
 
-The client uses the existing short-lived tenant token, with no additional stored app secret. Each API request has a three-second deadline and does not follow redirects. Processing creation runs concurrently with the model; terminal cleanup is bounded and completes before credential cleanup. Provider failures are logged without response bodies or credentials and do not change the model outcome. Only the processing reaction ID returned to this client is deleted. There is no blind retry after an ambiguous API failure.
+The client uses the existing short-lived tenant token, with no additional stored app secret. Each API request has a three-second deadline and does not follow redirects. The model uses the native CLI to create processing feedback after deciding to accept work; terminal lookup and cleanup are bounded and complete before credential cleanup. Provider failures are logged without response bodies or credentials and do not change the model outcome. Only a recent processing reaction ID verified as belonging to this bot is deleted. There is no blind retry after an ambiguous API failure.
 
 A process kill, network failure, or expired token can leave a stale processing reaction; these reactions are UI hints, not a durable task ledger. Reactions may require the bot's message-reaction permission in Feishu. The feature does not grant that permission automatically.
 
