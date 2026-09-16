@@ -95,7 +95,7 @@ export class FeishuTurnReactions {
       method === "DELETE"
         ? `/${encodeURIComponent(value)}`
         : method === "GET"
-          ? `?reaction_type=OnIt&page_size=100${value ? `&page_token=${encodeURIComponent(value)}` : ""}`
+          ? `?reaction_type=OnIt&page_size=50${value ? `&page_token=${encodeURIComponent(value)}` : ""}`
           : "";
     try {
       const response = await this.#fetch(`https://${host}${path}${suffix}`, {

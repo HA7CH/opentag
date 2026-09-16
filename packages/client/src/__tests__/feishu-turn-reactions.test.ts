@@ -33,6 +33,7 @@ describe("intent-driven Feishu turn reactions", () => {
     expect(request).not.toHaveBeenCalled();
     await reactions.finish("completed");
     expect(request.mock.calls.map(([, options]) => options?.method)).toEqual(["GET"]);
+    expect(new URL(String(request.mock.calls[0]?.[0])).searchParams.get("page_size")).toBe("50");
   });
 
   it("finalizes only a claim made by this bot after it decided to handle a message", async () => {
