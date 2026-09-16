@@ -1,4 +1,5 @@
 import { mkdir } from "node:fs/promises";
+import { join } from "node:path";
 import type {
   EffectiveRuntimeSnapshot,
   InputRejectReason,
@@ -481,7 +482,7 @@ async function prepareContextTree(
   if (!status) return { promptContext: {}, writableRoots: [] };
   return {
     promptContext: { contextTree: status },
-    writableRoots: status.status === "ready" ? [status.treePath] : [],
+    writableRoots: status.status === "ready" ? [status.treePath, join(status.treePath, ".git")] : [],
   };
 }
 

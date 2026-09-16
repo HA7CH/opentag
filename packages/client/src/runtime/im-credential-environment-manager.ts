@@ -5,6 +5,7 @@ import type { RuntimeImCredentialGrantResult, RuntimeImOutboxContext } from "@op
 import { type ClientLogger, createLogger } from "../observability/logger.js";
 import { assertWithin, ensurePrivateDirectory, writeDurableFile } from "../storage/durable-file.js";
 import { resolveOpenTagHomeLayout } from "../storage/home-layout.js";
+import type { FeishuReactionAuth } from "./feishu-turn-reactions.js";
 import type { RuntimeBusinessFrame, RuntimeConnection } from "./runtime-connection.js";
 
 const GRANT_TIMEOUT_MS = 10_000;
@@ -45,6 +46,7 @@ export interface ImCredentialGrantSubject {
 }
 
 export interface PreparedImCredentialEnvironment {
+  readonly feishuReactionAuth?: FeishuReactionAuth;
   readonly outboxContext?: RuntimeImOutboxContext;
   readonly path: string;
   readonly provider: "feishu" | "slack";
@@ -110,6 +112,10 @@ export class ImCredentialEnvironmentManager {
         await this.#writeEnvironmentFile(path, serializeEnvironment(environment, this.#platform), 0o600);
         return {
           path,
+          feishuReactionAuth: {
+            token: environment.LARKSUITE_CLI_TENANT_ACCESS_TOKEN,
+            teamBrand: result.grant.teamBrand,
+          },
           provider: result.grant.provider,
           ...(result.outboxContext ? { outboxContext: result.outboxContext } : {}),
         };
@@ -237,7 +243,7 @@ export class ImCredentialEnvironmentManager {
     sessionId: string,
     grant: Extract<RuntimeImCredentialGrantResult, { status: "succeeded" }>["grant"] & { provider: "feishu" },
     signal?: AbortSignal,
-  ): Promise<Record<string, string | undefined>> {
+  ): Promise<Record<string, string | undefined> & { LARKSUITE_CLI_TENANT_ACCESS_TOKEN: string }> {
     const configDir = this.#larkConfigDirPath(sessionId);
     await ensurePrivateDirectory(this.#root, configDir);
     const tenantAccessToken = await this.#exchangeFeishuToken(grant, signal);

@@ -1080,7 +1080,7 @@ describe("AgentTurnRunner", () => {
   });
 });
 
-function outgoingHarness() {
+function outgoingHarness(feishuTurnReactions = false) {
   const request = delivery();
   request.content.providerRef = {
     provider: "feishu",
@@ -1122,6 +1122,7 @@ function outgoingHarness() {
   const prompt = vi.fn(async (): Promise<AgentRunResult> => ({ runId: "turn-1", status: "completed", output: [] }));
   const logs: RecordedLog[] = [];
   const runner = new AgentTurnRunner({
+    feishuTurnReactions,
     bindingStore: { updateUnresolved: vi.fn(async () => undefined) } as unknown as SessionBindingStore,
     connection: { send: vi.fn(async () => undefined), capabilityVersion },
     custody: { markReporting, recordResult: vi.fn() } as unknown as TurnCustodyOwner,
@@ -1133,7 +1134,11 @@ function outgoingHarness() {
       observe: () => () => undefined,
     } as unknown as SessionRuntimeManager,
     credentialEnvironment: {
-      prepare: vi.fn(async () => ({ path: "/tmp/provider-env.sh", provider: "feishu" as const })),
+      prepare: vi.fn(async () => ({
+        path: "/tmp/provider-env.sh",
+        provider: "feishu" as const,
+        feishuReactionAuth: { token: "test-token", teamBrand: "lark" as const },
+      })),
       cleanup: vi.fn(async () => undefined),
     },
     turnPlan: { prepare, cleanup: vi.fn(async () => undefined) },
@@ -1210,3 +1215,37 @@ function credentialEnvironment() {
     cleanup: vi.fn(async () => undefined),
   };
 }
+
+describe("runtime-owned turn reactions", () => {
+  it("drives reactions for a real runner lifecycle and still submits its report", async () => {
+    const fetcher = vi
+      .fn<typeof fetch>()
+      .mockImplementation(async () => new Response(JSON.stringify({ code: 0, data: { reaction_id: "owned" } })));
+    vi.stubGlobal("fetch", fetcher);
+    try {
+      const h = outgoingHarness(true);
+      h.runner.start(liveOwner(h.request));
+      await h.runner.settled();
+      expect(fetcher.mock.calls.map(([, options]) => options?.method)).toEqual(["POST", "DELETE", "POST"]);
+      expect(h.create).toHaveBeenCalledWith(expect.objectContaining({ outcome: "completed" }));
+      expect(h.submit).toHaveBeenCalled();
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("does not turn a failed reaction into a failed model turn", async () => {
+    const fetcher = vi.fn<typeof fetch>().mockRejectedValue(new Error("offline"));
+    vi.stubGlobal("fetch", fetcher);
+    try {
+      const h = outgoingHarness(true);
+      h.runner.start(liveOwner(h.request));
+      await h.runner.settled();
+      expect(fetcher).toHaveBeenCalledTimes(2);
+      expect(h.create).toHaveBeenCalledWith(expect.objectContaining({ outcome: "completed" }));
+      expect(h.submit).toHaveBeenCalled();
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+});

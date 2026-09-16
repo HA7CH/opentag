@@ -16,6 +16,7 @@ import {
 import type { AgentInput, AgentRunResult, AgentRuntime, AgentRuntimeEvent } from "../agent-runtime/types.js";
 import { type ClientLogger, createLogger } from "../observability/logger.js";
 import { AgentRuntimeProviderUnavailableError } from "./agent-runtime-provider-registry.js";
+import { FeishuTurnReactions } from "./feishu-turn-reactions.js";
 import {
   ImCredentialEnvironmentError,
   type ImCredentialEnvironmentManager,
@@ -52,6 +53,7 @@ export interface AgentTurnOutgoingReplyCollector {
 }
 
 export interface AgentTurnRunnerOptions {
+  readonly feishuTurnReactions?: boolean;
   readonly bindingStore: SessionBindingStore;
   readonly connection: Pick<RuntimeConnection, "send"> & {
     capabilityVersion?(capability: string): number | undefined;
@@ -78,6 +80,7 @@ interface RunningTurn {
   phase: "starting" | "running" | "reporting";
   promise: Promise<void>;
   runtime?: AgentRuntime;
+  reactions?: FeishuTurnReactions;
 }
 
 export interface TurnCompletion {
@@ -103,8 +106,10 @@ export class AgentTurnRunner {
   readonly #outgoingReplies: AgentTurnRunnerOptions["outgoingReplies"];
   readonly #turns = new Map<string, RunningTurn>();
   #stopped = false;
+  readonly #feishuTurnReactions: boolean;
 
   constructor(options: AgentTurnRunnerOptions) {
+    this.#feishuTurnReactions = options.feishuTurnReactions ?? false;
     this.#bindingStore = options.bindingStore;
     this.#connection = options.connection;
     this.#custody = options.custody;
@@ -193,6 +198,7 @@ export class AgentTurnRunner {
       return steerResult(request, "deferred", "steer_state_unknown");
     }
 
+    turn.reactions?.start(request);
     try {
       await this.#bindingStore.recordSteer(request, semanticHash);
     } catch {
@@ -209,6 +215,12 @@ export class AgentTurnRunner {
 
   async settled(): Promise<void> {
     await Promise.all([...this.#turns.values()].map((turn) => turn.promise));
+  }
+
+  #startReactions(turn: RunningTurn, auth: import("./feishu-turn-reactions.js").FeishuReactionAuth | undefined): void {
+    if (!this.#feishuTurnReactions || !auth) return;
+    turn.reactions = new FeishuTurnReactions(auth, this.#logger);
+    turn.reactions.start(turn.owner.request);
   }
 
   async #run(turn: RunningTurn, shutdownSignal: AbortSignal): Promise<void> {
@@ -233,7 +245,7 @@ export class AgentTurnRunner {
       placementGeneration: owner.request.placementGeneration,
       now: this.#now,
     });
-    let completion: TurnCompletion;
+    let completion: TurnCompletion = { outcome: "unknown", executionEffects: "may_have_occurred" };
     let terminalObserved = false;
     let releaseObserver: () => void = () => undefined;
     let turnPlanInput: ProviderCliTurnPlanPrepareInput | undefined;
@@ -245,6 +257,7 @@ export class AgentTurnRunner {
         "starting",
       );
       const credentials = await this.#credentialEnvironment.prepare(owner.request, signal);
+      this.#startReactions(turn, credentials.feishuReactionAuth);
       if (this.#turnPlan && this.#runtimeManager.sessionKind(owner.request.sessionId) === "visible") {
         turnPlanInput = {
           provider: credentials.provider,
@@ -305,6 +318,7 @@ export class AgentTurnRunner {
       if (!terminalObserved) trace.turnCompleted(completion.outcome);
     } finally {
       releaseObserver();
+      await turn.reactions?.finish(completion.outcome);
       if (turnPlanInput) {
         /* v8 ignore next -- turn-plan teardown is best-effort. */
         await this.#turnPlan?.cleanup(turnPlanInput).catch(() => undefined);

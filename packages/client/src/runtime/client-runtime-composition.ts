@@ -675,6 +675,7 @@ export async function createClientRuntime(
     steer: (request) => runner.steer(request),
   });
   runner = new AgentTurnRunner({
+    feishuTurnReactions: process.env.OPENTAG_FEISHU_TURN_REACTIONS === "1",
     bindingStore,
     connection,
     custody,

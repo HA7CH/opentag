@@ -316,7 +316,12 @@ describe("SessionRuntimeManager", () => {
     const cwd = await workspace.cwd(request.agentId);
     expect(contextTree.ensureAgent).toHaveBeenCalledWith(cwd);
     // Codex is workspace-write, so the shared tree is unreachable unless it is named here.
-    expect(created?.workspace.writableRoots).toEqual([cwd, resolve(home, "config/context-tree"), treePath]);
+    expect(created?.workspace.writableRoots).toEqual([
+      cwd,
+      resolve(home, "config/context-tree"),
+      treePath,
+      resolve(treePath, ".git"),
+    ]);
     expect(created?.systemPrompt).toContain(`Context Tree: ${treePath}`);
     expect(created?.systemPrompt).toContain("members/<your Agent slug>/");
     await manager.close();
