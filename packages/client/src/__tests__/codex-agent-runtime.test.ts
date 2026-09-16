@@ -64,7 +64,7 @@ describe("CodexAgentRuntime", () => {
     await runtime.close();
   });
 
-  it("resumes only the exact thread encoded by the binding", async () => {
+  it("resumes the exact thread without hydrating history into the transport frame", async () => {
     const client = new ScriptedCodexClient("complete");
     const factory = codexFactory(client);
     const runtime = await factory.resume({
@@ -74,6 +74,7 @@ describe("CodexAgentRuntime", () => {
 
     expect(client.call("thread/resume")?.params).toMatchObject({
       threadId: "thread-exact",
+      excludeTurns: true,
       developerInstructions: "OpenTag managed system prompt",
     });
     expect(client.call("thread/start")).toBeUndefined();

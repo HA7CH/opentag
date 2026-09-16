@@ -962,7 +962,8 @@ export class CodexAgentRuntimeFactory implements AgentRuntimeFactory {
       const method = mode === "create" ? "thread/start" : "thread/resume";
       const response = requireRecord(
         await client.request(method, {
-          ...(method === "thread/resume" && expectedThreadId ? { threadId: expectedThreadId } : {}),
+          // The runtime only needs thread.id; full history can exceed the JSONL frame limit.
+          ...(method === "thread/resume" && expectedThreadId ? { threadId: expectedThreadId, excludeTurns: true } : {}),
           cwd: request.workspace.cwd,
           developerInstructions: request.systemPrompt,
           approvalPolicy: codexApprovalPolicy(request.policy.approvals),
