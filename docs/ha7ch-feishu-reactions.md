@@ -5,10 +5,10 @@ This fork adds optional runtime-owned progress reactions to OpenTag v0.0.5. It i
 Set `OPENTAG_FEISHU_TURN_REACTIONS=1` in the OpenTag daemon environment and restart it after active turns finish. Omit the variable to preserve upstream behavior. This option applies to Feishu/Lark messages owned by this computer; it does not enable Slack reactions.
 
 - `OnIt`: the model decided to help or answer and explicitly claimed this message through the native CLI. Receipt alone creates no reaction.
-- `DONE`: the model turn ended normally. This is not proof that every business objective was achieved or that a reply was delivered.
+- Normal completion: remove the processing reaction without posting a completion reaction.
 - `ERROR`: the turn failed, was cancelled, or has an unknown outcome.
 
-The model decides separately for each message, including successful steers, mentions, private chats, and ambient group messages. Repeated IDs within a turn are deduplicated. Observer copies never react. Unclaimed messages never receive DONE or ERROR. At turn completion, the client checks for a recent OnIt belonging to this bot and only finalizes that claim. Other actors and old reactions are left alone.
+The model decides separately for each message, including successful steers, mentions, private chats, and ambient group messages. Repeated IDs within a turn are deduplicated. Observer copies never react. Unclaimed messages never receive ERROR. At turn completion, the client checks for a recent OnIt belonging to this bot and only finalizes that claim. Other actors and old reactions are left alone.
 
 The client uses the existing short-lived tenant token, with no additional stored app secret. Each API request has a three-second deadline and does not follow redirects. The model uses the native CLI to create processing feedback after deciding to accept work; terminal lookup and cleanup are bounded and complete before credential cleanup. Provider failures are logged without response bodies or credentials and do not change the model outcome. Only a recent processing reaction ID verified as belonging to this bot is deleted. There is no blind retry after an ambiguous API failure.
 

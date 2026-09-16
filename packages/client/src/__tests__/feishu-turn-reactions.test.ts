@@ -40,11 +40,10 @@ describe("intent-driven Feishu turn reactions", () => {
     const { reactions, request } = fixture([claim()]);
     reactions.start(delivery());
     await reactions.finish("completed");
-    expect(request.mock.calls.map(([, options]) => options?.method)).toEqual(["GET", "DELETE", "POST"]);
+    expect(request.mock.calls.map(([, options]) => options?.method)).toEqual(["GET", "DELETE"]);
     expect(request.mock.calls[1]?.[0]).toBe(
       "https://open.feishu.cn/open-apis/im/v1/messages/om-test/reactions/owned-claim",
     );
-    expect(JSON.parse(request.mock.calls[2]?.[1]?.body as string).reaction_type.emoji_type).toBe("DONE");
   });
 
   it("leaves other actors, old claims, and non-processing reactions alone", async () => {
@@ -91,7 +90,7 @@ describe("intent-driven Feishu turn reactions", () => {
     reactions.start(delivery());
     await reactions.finish("completed");
     expect(String(request.mock.calls[1]?.[0])).toContain("page_token=next%20page");
-    expect(request.mock.calls.map(([, options]) => options?.method)).toEqual(["GET", "GET", "DELETE", "POST"]);
+    expect(request.mock.calls.map(([, options]) => options?.method)).toEqual(["GET", "GET", "DELETE"]);
   });
 
   it("bounds pagination and does not fabricate completion after an API failure", async () => {

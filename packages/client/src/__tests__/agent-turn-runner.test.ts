@@ -1242,7 +1242,7 @@ describe("runtime-owned turn reactions", () => {
       const h = outgoingHarness(true);
       h.runner.start(liveOwner(h.request));
       await h.runner.settled();
-      expect(fetcher.mock.calls.map(([, options]) => options?.method)).toEqual(["GET", "DELETE", "POST"]);
+      expect(fetcher.mock.calls.map(([, options]) => options?.method)).toEqual(["GET", "DELETE"]);
       expect(h.create).toHaveBeenCalledWith(expect.objectContaining({ outcome: "completed" }));
       expect(h.submit).toHaveBeenCalled();
     } finally {

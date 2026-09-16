@@ -62,7 +62,7 @@ export class FeishuTurnReactions {
     const processing = await this.#ownedProcessing(ref, registeredAt);
     if (!processing) return;
     await this.#request(ref.messageId, "DELETE", processing);
-    await this.#request(ref.messageId, "POST", outcome === "completed" ? "DONE" : "ERROR");
+    if (outcome !== "completed") await this.#request(ref.messageId, "POST", "ERROR");
   }
 
   async #ownedProcessing(ref: FeishuReference, registeredAt: number): Promise<string | undefined> {
