@@ -78,7 +78,8 @@ import { TurnCustodyOwner } from "./turn-custody-owner.js";
 import { TurnReportOwner } from "./turn-report-owner.js";
 
 const DEFAULT_CAPABILITY_REFRESH_INTERVAL_MS = Math.floor(RUNTIME_CLIENT_CAPABILITY_TTL_MS / 2);
-const DEFAULT_PROVIDER_PROBE_DEADLINE_MS = 10_000;
+// A Codex capability probe starts and resumes three processes on a shared host.
+const DEFAULT_PROVIDER_PROBE_DEADLINE_MS = 60_000;
 
 interface SharedProviderRefresh {
   readonly controller: AbortController;
