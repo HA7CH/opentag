@@ -2,16 +2,24 @@
 
 [简体中文](./zh-CN/cloud-runner-toolchain.md)
 
-This is the OpenTag **Cloud Runner base image**: a linux/amd64 Linux environment that later E3 work
-can consume as a fixed, digest-addressed image. It is **not** a fake HTTP runner, **not** a Cloud
-registration or session API, and **not** product Cloud Session integration.
+This is the OpenTag **Cloud Runner image**: a linux/amd64 Linux environment consumed by
+[E3 execution](./cloud-runner-execution.md) as a fixed, digest-addressed image. This document
+covers image construction and local toolchain acceptance; E3 documents the native Cloud path.
 
 The Runner is owned by `@opentag/client`. It shares the **CLI release coordinate**
 (`apps/cli`, currently `0.0.5`). Private Client `0.0.0` is not a Runner version.
 
 ## What the image contains
 
-Root-owned binaries on `PATH`, running as a non-root `runner` user with dedicated `HOME`,
+The image default user is `root` because the Cloud Run native sandbox launcher requires the
+Instance parent process to run as root. `runner-entrypoint` keeps root only for the exact
+`opentag-runner serve` invocation, which it runs under the source-owned `opentag-init`; every
+other command is dropped to uid/gid 10000 with supplementary groups cleared through the
+base-image `setpriv`. Nothing installs or downloads `setpriv`: the digest-pinned Node bookworm
+image ships it (util-linux), and the build asserts both the version banner and the exact
+uid/gid/group drop before any image is produced.
+
+Binaries on `PATH` stay root-owned and the unprivileged `runner` user keeps dedicated `HOME`,
 `/workspace`, and `/tmp`:
 
 | Command | Pin |
@@ -103,14 +111,17 @@ never a whole `HOME` mount. `models.json` is rebuilt from the recognized top-lev
 `models` and `providers` only, so unknown fields never reach the container; malformed shapes fail
 with fixed messages. The guard runs with Docker `--init` so PID 1 is an init that reaps orphaned
 children (a zombie is not a gone process), keeping `sleep infinity` alive until harness cleanup
-removes it; the image's own default entrypoint for future long-lived E3 work is unchanged. The
-real acceptance command has a separate 30-minute timeout. It asserts a confirmed cancellation of a live Bash fixture child
+removes it. The image entrypoint uses the source-owned `opentag-init` to forward signals and
+reap orphaned children; offline acceptance tests this init without Docker `--init`. The same
+offline pass asserts the privilege boundary: a normal command reports uid 10000, gid 10000 and
+`id -G` 10000, while the exact `serve` path keeps root and delegates to the source-owned init.
+The real acceptance command has a separate 30-minute timeout. It asserts a confirmed cancellation of a live Bash fixture child
 (shared tracked Pi PID set), and removes the container afterwards with daemon-confirmed removal.
 
 Timing fields are distinct: `startupMs` measures a fresh container plus Runner CLI startup
 (`identity`); probe/skills/accept durations are reported separately (`durations`, `acceptanceMs`).
 `memory.peak` is read inside the container before it exits, never after removal. The Runner CLI
-installs SIGTERM/SIGINT handlers (it is usually PID 1), runs its scoped cleanup, and exits
+installs SIGTERM/SIGINT handlers beneath `opentag-init`, runs its scoped cleanup, and exits
 143/130; the host harness kills owned process groups, including nested Docker CLI processes,
 on signals before removing containers. Malformed config JSON is reported with the filename only
 (never source fragments), and acceptance log redaction covers quoted JSON secret fields and full
@@ -142,5 +153,6 @@ once a parent run supplies them.
 ## Boundaries
 
 - Local Docker on a non-amd64 host uses emulation; that is not native Sandbox or Cloud Run.
-- This image does not register with Cloud, open an HTTP session port, or speak the Server API.
+- The E3 `serve` command connects outbound to the authenticated Server Runner WebSocket. It opens
+  no parent-container HTTP control port. See [execution configuration](./cloud-runner-execution.md).
 - Slack/Lark in the image are catalog-pinned CLIs with update checks disabled, not logged-in IM.

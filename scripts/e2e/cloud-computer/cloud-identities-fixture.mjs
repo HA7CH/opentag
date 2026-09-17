@@ -5,7 +5,7 @@
  */
 import { randomBytes } from "node:crypto";
 import { existsSync } from "node:fs";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, realpath, rm } from "node:fs/promises";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -38,6 +38,16 @@ const EXTRA_ENV_KEYS = new Set([
   "OPENTAG_CLOUD_IDENTITIES_ENABLED",
   "OPENTAG_CLOUD_STORAGE_BASE",
   "OPENTAG_CLOUD_RUNNER_VERSION",
+  "OPENTAG_CLOUD_RUNNER_ENABLED",
+  "OPENTAG_CLOUD_RUNNER_IMAGE",
+  "OPENTAG_CLOUD_RUNNER_PROJECT",
+  "OPENTAG_CLOUD_RUNNER_REGION",
+  "OPENTAG_CLOUD_RUNNER_SERVICE_ACCOUNT",
+  "OPENTAG_CLOUD_RUNNER_BACKEND_ORIGIN",
+  "OPENTAG_CLOUD_RUNNER_VPC_NETWORK",
+  "OPENTAG_CLOUD_RUNNER_VPC_SUBNET",
+  "OPENTAG_CLOUD_RUNNER_EXECUTION_TAG",
+  "OPENTAG_CLOUD_RUNNER_GCP_ACCESS_TOKEN",
 ]);
 const BASIC_ENV_KEYS = [
   "PATH",
@@ -188,6 +198,10 @@ function buildServerEnv(o) {
   return {
     ...copyEnvWithoutSecrets(process.env),
     HOME: o.home,
+    // The Server resolves runtimeControlDirectory to '.opentag-control' under its cwd
+    // (repositoryRoot here), which would leak durable control state past fixture cleanup.
+    // Pin it inside the fixture-owned temporary HOME so workspace cleanup removes it.
+    OPENTAG_RUNTIME_CONTROL_DIRECTORY: join(o.home, "runtime-control"),
     OPENTAG_DATABASE_URL: o.postgres.databaseUrl,
     OPENTAG_AUTO_MIGRATE: "true",
     OPENTAG_ENV: "dev",
@@ -207,7 +221,15 @@ function buildServerEnv(o) {
 }
 
 function spawnServer({ repositoryRoot, serverEntry, logPath, env, secrets, baseUrl }) {
-  const child = spawnLogged(process.execPath, [serverEntry], { cwd: repositoryRoot, logPath, secrets, env });
+  // Keep the cleanup API alive when Ctrl-C reaches the harness foreground process group.
+  // The fixture retains the child handle and stops it only after Cloud resources are removed.
+  const child = spawnLogged(process.execPath, [serverEntry], {
+    cwd: repositoryRoot,
+    logPath,
+    secrets,
+    env,
+    detached: true,
+  });
   const listening = new Promise((settle) => {
     let announced = "";
     child.stdout.on("data", (chunk) => {
@@ -394,7 +416,12 @@ export async function createCloudIdentitiesFixture(options = {}) {
   if (!repositoryRoot || !artifactDirectory) {
     throw new Error("createCloudIdentitiesFixture requires repositoryRoot and artifactDirectory");
   }
-  const workspace = await mkdtemp(join(tmpdir(), "opentag-e2-identities-"));
+  // Canonicalize the platform temporary directory before mkdtemp: on macOS tmpdir() is
+  // /var/folders/... with /var a symlink to /private/var, and the Server session-control
+  // store rejects symlink ancestors. Workspace, home, runtime-control, and cleanup must
+  // all use the physical path.
+  const temporaryRoot = await realpath(tmpdir());
+  const workspace = await mkdtemp(join(temporaryRoot, "opentag-e2-identities-"));
   const resources = { workspace, secrets: [], cleanupFailures: [] };
   try {
     return await assembleFixture({ ...options, resources });

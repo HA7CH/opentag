@@ -1,19 +1,24 @@
 # Cloud Runner 工具链
 
-> Synced: 2026-09-15
+> Synced: 2026-09-16
 >
 > Canonical source: [../cloud-runner-toolchain.md](../cloud-runner-toolchain.md)
 
-这是 OpenTag **Cloud Runner 基础镜像**：一份供后续 E3 以固定、digest 寻址方式消费的 linux/amd64 Linux
-环境。它**不是**假 HTTP runner，**不是** Cloud 注册或 session API，也**不是**产品 Cloud Session 集成。
+这是 OpenTag **Cloud Runner 镜像**：供 [E3 执行链路](./cloud-runner-execution.md) 以固定 digest
+消费的 linux/amd64 Linux 环境。本文介绍镜像构建和本地工具链验收；原生 Cloud 链路见 E3 文档。
 
 Runner 由 `@opentag/client` 拥有，并与 **CLI 发布坐标**共享版本（`apps/cli`，当前为 `0.0.5`）。私有
 Client `0.0.0` 不是 Runner 版本。
 
 ## 镜像内容
 
-`PATH` 上的二进制由 root 拥有；进程以非 root 的 `runner` 用户运行，并使用独立的 `HOME`、`/workspace`
-和 `/tmp`：
+镜像默认用户是 `root`，因为 Cloud Run 原生 Sandbox launcher 要求 Instance 父进程以 root 运行。
+`runner-entrypoint` 只对精确的 `opentag-runner serve` 保留 root，并由源码自有的 `opentag-init`
+运行；其余所有命令都通过基础镜像自带的 `setpriv` 降为 uid/gid 10000，并清空附加组。`setpriv`
+不安装、不下载：按 digest 固定的 Node bookworm 镜像自带（util-linux），构建期同时断言版本横幅与
+精确的 uid/gid/组降权结果。
+
+`PATH` 上的二进制仍由 root 拥有；非特权的 `runner` 用户保有独立的 `HOME`、`/workspace` 和 `/tmp`：
 
 | 命令 | 锁定 |
 | --- | --- |
@@ -94,14 +99,16 @@ shell 命令间接寻址），生成过滤后的暂存副本，并只把该副�
 `chown`/`chmod` 注入全新 guard 容器——绝不整体挂载 `HOME`。`models.json` 只由受认可的顶层字段
 `models` 与 `providers` 重建，未知字段绝不进入容器；畸形结构以固定消息失败。
 guard 容器以 Docker `--init` 运行，由 PID 1 回收孤儿子进程，并以
-`sleep infinity` 保活，直到 harness 清理时删除；镜像自身面向未来长时 E3 的默认 entrypoint 并
-未改变。真实验收命令单独设置 30 分钟超时。
+`sleep infinity` 保活，直到 harness 清理时删除。镜像入口使用源码自有的 `opentag-init` 转发信号、
+回收孤儿进程；offline 验收会在不使用 Docker `--init` 的条件下验证它。同一次 offline 验收还会
+断言权限边界：普通命令报告 uid 10000、gid 10000 且 `id -G` 为 10000，而精确的 `serve` 路径保持
+root 并交给源码自有的 init。真实验收命令单独设置 30 分钟超时。
 验收断言一个存活 Bash fixture 子进程被确认取消（共享的 Pi PID 跟踪集），随后删除
 容器并以 daemon 确认删除结果。
 
 计时字段是分开的：`startupMs` 量度全新容器加 Runner CLI 启动（`identity`）；probe/skills/
 accept 的耗时单独报告（`durations`、`acceptanceMs`）。`memory.peak` 在容器退出前于容器内读
-取，绝不在删除后读取。Runner CLI 安装了 SIGTERM/SIGINT 处理器（它通常是 PID 1），执行自身
+取，绝不在删除后读取。Runner CLI 在 `opentag-init` 下安装 SIGTERM/SIGINT 处理器，执行自身
 清理后以 143/130 退出；宿主机 harness 在收到信号时先终止自有进程组（包括 Docker CLI 的子进程），再删除容器。
 配置 JSON 解析失败只报告文件名（绝不回显源码片段）；验收日志脱敏除结构化字段与已知密钥前缀外，
 还覆盖引号包围的 JSON 秘密字段和完整的 `Authorization`/`Bearer` 值。
@@ -131,5 +138,6 @@ Sandbox、网络策略或 IM 的证明。
 ## 边界
 
 - 非 amd64 宿主机上的本地 Docker 走模拟，不能证明 native Sandbox 或 Cloud Run。
-- 此镜像不向 Cloud 注册、不开放 HTTP session 端口、也不调用 Server API。
+- E3 的 `serve` 命令主动连接经过认证的 Server Runner WebSocket；父容器不开放 HTTP 控制端口。
+  参见[执行配置](./cloud-runner-execution.md)。
 - 镜像里的 Slack/Lark 是 catalog 锁定、已关闭更新检查的 CLI，不是已登录的 IM。

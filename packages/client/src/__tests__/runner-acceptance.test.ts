@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { mkdtemp, readFile, stat, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -10,7 +10,7 @@ import type {
   AgentRuntimeFactory,
   AgentRuntimeProbeResult,
 } from "../agent-runtime/types.js";
-import { runRunnerAcceptance } from "../runner/acceptance.js";
+import { createTrackedFactory, RUNNER_PI_PROBE_TIMEOUT_MS, runRunnerAcceptance } from "../runner/acceptance.js";
 import { CONTEXT_TREE_PACKAGED_SKILL_DIRECTORIES } from "../runner/skills.js";
 
 const directories: string[] = [];
@@ -22,6 +22,10 @@ afterEach(async () => {
 function completed(runId: string, text: string) {
   return { runId, status: "completed" as const, output: [{ type: "text" as const, text }] };
 }
+
+// Minimal hermetic Pi probe contract: exact help tokens and a valid models table.
+const RUNNER_PROBE_HELP =
+  "--mode rpc --session-id --session-dir --offline --no-extensions --no-skills --no-prompt-templates --no-themes --no-context-files --no-approve --tools --model --thinking --append-system-prompt --name";
 
 function fakeFactory(options: { credential?: boolean }): AgentRuntimeFactory {
   const binding = { providerId: "pi", schemaVersion: 1, payload: { sessionId: "s" } };
@@ -110,6 +114,49 @@ describe("runner acceptance", () => {
     expect(
       report.events.some((item) => item.name === "model" && item.detail?.includes("no configured model credential")),
     ).toBe(true);
+  });
+
+  it("hands the spawned Pi exactly the provided piHome as its agent config directory", async () => {
+    const workspace = await mkdtemp(join(tmpdir(), "opentag-runner-env-"));
+    directories.push(workspace);
+    const piHome = join(workspace, "filtered-pi");
+    const bin = join(workspace, "bin");
+    const record = join(workspace, "pi-env.txt");
+    await mkdir(piHome, { recursive: true });
+    await mkdir(bin, { recursive: true });
+    // A hermetic stand-in for the Pi CLI: answer the exact probe contract and record which agent
+    // config directory every invocation was handed through PI_CODING_AGENT_DIR.
+    const script = [
+      "#!/bin/sh",
+      `printf '%s\\n' "$PI_CODING_AGENT_DIR" >> "${record}"`,
+      'for arg in "$@"; do',
+      '  case "$arg" in',
+      '    --version) echo "0.84.2"; exit 0 ;;',
+      `    --help) echo "${RUNNER_PROBE_HELP}"; exit 0 ;;`,
+      `    --list-models) printf 'provider model context max-out thinking images\\ndeepseek deepseek-v4.1 128000 8192 max no\\n'; exit 0 ;;`,
+      "  esac",
+      "done",
+      "exit 0",
+      "",
+    ].join("\n");
+    await writeFile(join(bin, "pi"), script, { mode: 0o755 });
+    const factory = createTrackedFactory(
+      {
+        mode: "real",
+        piHome,
+        runtimeHome: join(workspace, "home"),
+        path: bin,
+        sessionDirectory: join(workspace, "sessions"),
+        workspace,
+      },
+      [],
+      new Set<number>(),
+    );
+    const probe = await factory.probe({});
+    expect(probe).toMatchObject({ ready: true, issues: [] });
+    const seen = (await readFile(record, "utf8")).trim().split("\n");
+    expect(seen.length).toBeGreaterThanOrEqual(3);
+    expect([...new Set(seen)]).toEqual([piHome]);
   });
 });
 
@@ -336,4 +383,44 @@ describe("runner acceptance disposable Context Tree", () => {
       ),
     ).toBe(true);
   });
+
+  it("prepares the native Pi probe with the 30s Runner budget", async () => {
+    const workspace = await mkdtemp(join(tmpdir(), "opentag-runner-probe-"));
+    directories.push(workspace);
+    const pi = join(workspace, "pi");
+    await writeFile(
+      pi,
+      `#!/bin/sh
+if [ "$1" = "--version" ]; then
+  exec '${process.execPath}' -e 'setTimeout(() => { console.log("0.84.2"); }, 5200)'
+fi
+if [ "$1" = "--offline" ]; then
+  for arg in "$@"; do
+    if [ "$arg" = "--help" ]; then echo ${JSON.stringify(RUNNER_PROBE_HELP)}; exit 0; fi
+  done
+  echo "provider  model            context  max-out  thinking  images"
+  echo "fixture   configured-model  128K     8K       no        no"
+  exit 0
+fi
+exit 1
+`,
+      "utf8",
+    );
+    await chmod(pi, 0o755);
+    expect(RUNNER_PI_PROBE_TIMEOUT_MS).toBe(30_000);
+    const factory = createTrackedFactory(
+      {
+        mode: "real",
+        piHome: workspace,
+        runtimeHome: workspace,
+        sessionDirectory: join(workspace, "sessions"),
+        workspace,
+        path: workspace,
+      },
+      [],
+      new Set(),
+    );
+    // The same delayed startup fails on the provider's 5s default; the Runner budget must accept it.
+    await expect(factory.probe({})).resolves.toEqual({ ready: true, version: "0.84.2", issues: [] });
+  }, 20_000);
 });

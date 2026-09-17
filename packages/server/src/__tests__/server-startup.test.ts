@@ -296,6 +296,7 @@ const originalSecrets = {
   encryptionKeyRing: process.env.OPENTAG_ENCRYPTION_KEY_RING,
   slackClient: process.env.OPENTAG_SLACK_CLIENT_SECRET,
   slackSigning: process.env.OPENTAG_SLACK_SIGNING_SECRET,
+  cloudRunnerToken: process.env.OPENTAG_CLOUD_RUNNER_GCP_ACCESS_TOKEN,
 };
 const originalExitCode = process.exitCode;
 
@@ -303,6 +304,7 @@ function defaultConfig() {
   return {
     autoMigrate: true,
     cloudIdentities: { enabled: false },
+    cloudRunner: { enabled: false },
     channelTarget: {
       downloadBaseUrl: "https://download.test/releases",
       pollIntervalMs: 300_000,
@@ -402,6 +404,7 @@ beforeEach(() => {
   process.env.OPENTAG_ENCRYPTION_KEY_RING = "encryption-key-ring-secret";
   process.env.OPENTAG_SLACK_CLIENT_SECRET = "slack-client-secret";
   process.env.OPENTAG_SLACK_SIGNING_SECRET = "slack-signing-secret";
+  process.env.OPENTAG_CLOUD_RUNNER_GCP_ACCESS_TOKEN = "cloud-runner-static-token";
   process.exitCode = undefined;
 });
 
@@ -417,6 +420,7 @@ afterEach(() => {
   restore("OPENTAG_ENCRYPTION_KEY_RING", originalSecrets.encryptionKeyRing);
   restore("OPENTAG_SLACK_CLIENT_SECRET", originalSecrets.slackClient);
   restore("OPENTAG_SLACK_SIGNING_SECRET", originalSecrets.slackSigning);
+  restore("OPENTAG_CLOUD_RUNNER_GCP_ACCESS_TOKEN", originalSecrets.cloudRunnerToken);
   process.exitCode = originalExitCode;
 });
 
@@ -630,7 +634,7 @@ describe("Server startup", () => {
     async (failureStage, expectedEvents) => {
       const stderr = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
       const failure = new Error(
-        "postgres://db-user:db-password@localhost/opentag jwt-secret google-secret encryption-secret slack-client-secret slack-signing-secret",
+        "postgres://db-user:db-password@localhost/opentag jwt-secret google-secret encryption-secret slack-client-secret slack-signing-secret cloud-runner-static-token",
       );
       if (failureStage === "configuration")
         state.parseServerConfig.mockImplementation(() => {
@@ -652,6 +656,7 @@ describe("Server startup", () => {
         "encryption-secret",
         "slack-client-secret",
         "slack-signing-secret",
+        "cloud-runner-static-token",
       ]) {
         expect(output).not.toContain(secret);
       }
@@ -667,7 +672,7 @@ describe("Server startup", () => {
     };
     app.listen.mockRejectedValue(
       new Error(
-        "postgres://db-user:db-password@localhost/opentag jwt-secret google-secret encryption-secret encryption-key-ring-secret slack-client-secret slack-signing-secret",
+        "postgres://db-user:db-password@localhost/opentag jwt-secret google-secret encryption-secret encryption-key-ring-secret slack-client-secret slack-signing-secret cloud-runner-static-token",
       ),
     );
 
@@ -694,6 +699,7 @@ describe("Server startup", () => {
       "encryption-key-ring-secret",
       "slack-client-secret",
       "slack-signing-secret",
+      "cloud-runner-static-token",
     ]) {
       expect(logged).not.toContain(secret);
     }

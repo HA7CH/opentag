@@ -12,6 +12,7 @@ import {
 } from "@opentag/shared";
 import { z } from "zod";
 import { CloudRunnerVersionSchema, parseCloudStorageBase } from "./cloud-identities-config.js";
+import { type CloudRunnerConfig, resolveCloudRunnerConfig } from "./cloud-runner-config.js";
 
 export { parseCloudStorageBase } from "./cloud-identities-config.js";
 
@@ -575,6 +576,11 @@ export interface ServerConfig {
    * target, never observed execution. Off by default.
    */
   cloudIdentities: CloudIdentitiesConfig;
+  /**
+   * E3 Cloud Runner allocation. Off by default; enabling requires Cloud identities plus the exact
+   * digest-pinned Runner image, GCP coordinates, backend origin, and Direct VPC attachment.
+   */
+  cloudRunner: CloudRunnerConfig;
 }
 
 export type CloudIdentitiesConfig = { enabled: false } | { enabled: true; storageBase: string; runnerVersion: string };
@@ -740,6 +746,7 @@ export function parseServerConfig(environment: NodeJS.ProcessEnv): ServerConfig 
       parsed.OPENTAG_CLOUD_STORAGE_BASE,
       parsed.OPENTAG_CLOUD_RUNNER_VERSION,
     ),
+    cloudRunner: resolveCloudRunnerConfig(environment, parsed.OPENTAG_CLOUD_IDENTITIES_ENABLED),
   };
 }
 

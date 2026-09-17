@@ -7,9 +7,11 @@ import { copyIsolatedPiConfig } from "./config.js";
 import { parseRunnerIdentity } from "./identity.js";
 import { expectedFromIdentity, probeRunnerTools, runnerToolsReady } from "./probe.js";
 import { redactAcceptanceRecord } from "./redact.js";
+import { loadRunnerServeConfig, runRunnerServe } from "./serve.js";
 import { registerRunnerSignalCleanup } from "./signals.js";
 import { assembleContextTreeSkills } from "./skills.js";
 import type { RunnerAcceptanceReport, RunnerCliInvocation, RunnerIdentity } from "./types.js";
+import { runRunnerWorker } from "./worker.js";
 
 export interface RunnerCliIo {
   readonly env?: NodeJS.ProcessEnv;
@@ -137,11 +139,49 @@ async function runAccept(invocation: RunnerCliInvocation, io: RunnerCliIo, cwd: 
   }
 }
 
+async function runServe(invocation: RunnerCliInvocation, io: RunnerCliIo): Promise<number> {
+  const env = io.env ?? process.env;
+  if (invocation.workspace) io.stderr.write("--workspace is ignored in serve mode; OPENTAG_RUNNER_WORKSPACE applies\n");
+  const config = loadRunnerServeConfig(env);
+  /*
+   * One signal owner for serve. The bin entrypoint owns the process-level handlers; this scope
+   * aborts serve through its AbortSignal and awaits the serve promise, so serve's own `finally`
+   * (active acceptance cancellation, native sandbox deletion) completes before the process exits.
+   * serve must not install a second process handler for this CLI path.
+   */
+  const stop = new AbortController();
+  const running = runRunnerServe(config, {
+    env,
+    stderr: io.stderr,
+    signal: stop.signal,
+    installSignalHandlers: false,
+  });
+  registerRunnerSignalCleanup(async () => {
+    stop.abort();
+    await running;
+  });
+  try {
+    return await running;
+  } finally {
+    registerRunnerSignalCleanup(undefined);
+  }
+}
+
+async function runWorker(invocation: RunnerCliInvocation, io: RunnerCliIo): Promise<number> {
+  if (invocation.workspace) io.stderr.write("--workspace is ignored in worker mode; the sandbox workspace is fixed\n");
+  return runRunnerWorker(
+    { stdin: process.stdin, stdout: io.stdout, stderr: io.stderr, ...(io.env ? { env: io.env } : {}) },
+    {},
+  );
+}
+
 const COMMANDS = {
   identity: runIdentity,
   probe: runProbe,
   skills: runSkills,
   accept: runAccept,
+  serve: runServe,
+  worker: runWorker,
 } as const;
 
 export async function runRunnerCli(argv: readonly string[], io: RunnerCliIo, cwd = process.cwd()): Promise<number> {
