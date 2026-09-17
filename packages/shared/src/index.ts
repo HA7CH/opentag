@@ -214,6 +214,8 @@ export {
   type ValidationIssue,
   ValidationIssueSchema,
 } from "./errors.js";
+export * from "./github-integration.js";
+export * from "./github-management.js";
 export { type ServerHealth, ServerHealthSchema } from "./health.js";
 export {
   ACCOUNT_AGENT_CREATION_INTENT_TEMPLATE,
@@ -267,6 +269,18 @@ export {
   FEISHU_SETUP_ATTEMPT_TEMPLATE,
   feishuSetupAttemptCancelPath,
   feishuSetupAttemptPath,
+  GITHUB_INTEGRATION_AUTHORIZATION_PATH,
+  GITHUB_INTEGRATION_BINDINGS_PATH,
+  GITHUB_INTEGRATION_DISCONNECT_PATH,
+  GITHUB_INTEGRATION_PATH,
+  GITHUB_INTEGRATION_REPOSITORIES_PATH,
+  GITHUB_OAUTH_CALLBACK_PATH,
+  GITHUB_WEBHOOK_PATH,
+  githubIntegrationAuthorizationPath,
+  githubIntegrationBindingsPath,
+  githubIntegrationDisconnectPath,
+  githubIntegrationPath,
+  githubIntegrationRepositoriesPath,
   HTTP_PATHS,
   IM_BINDING_BY_ID_TEMPLATE,
   IM_BINDING_DIAGNOSTICS_TEMPLATE,
@@ -290,6 +304,7 @@ export {
   getRuntimeConfigurationOptions,
   type RuntimeConfigurationOptions,
 } from "./runtime-configuration-options.js";
+export * from "./runtime-credentials.js";
 export {
   AGENT_SLUG_MAX_LENGTH,
   type AgentRuntimeTestCancelFrame,
@@ -338,6 +353,8 @@ export {
   ProviderCliValidationGrantFrameSchema,
   type ProviderCliValidationResultFrame,
   ProviderCliValidationResultFrameSchema,
+  type ProviderCliValidationRunFrame,
+  ProviderCliValidationRunFrameSchema,
   type RetainedTurnReportClaim,
   RetainedTurnReportClaimSchema,
   RUNTIME_DEFAULT_MAX_DURATION_MS,
