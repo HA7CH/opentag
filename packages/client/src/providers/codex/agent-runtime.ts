@@ -962,7 +962,7 @@ export class CodexAgentRuntimeFactory implements AgentRuntimeFactory {
       const method = mode === "create" ? "thread/start" : "thread/resume";
       const response = requireRecord(
         await client.request(method, {
-          ...(method === "thread/resume" && expectedThreadId ? { threadId: expectedThreadId } : {}),
+          ...codexThreadParams(method, expectedThreadId),
           cwd: request.workspace.cwd,
           developerInstructions: request.systemPrompt,
           approvalPolicy: codexApprovalPolicy(request.policy.approvals),
@@ -1161,6 +1161,20 @@ function parseProviderConfiguration(value: JsonValue | undefined): CodexProvider
     result[key as keyof CodexProviderConfiguration] = item;
   }
   return result;
+}
+
+/**
+ * Turn hydration stays on the Server: Codex otherwise returns the entire stored thread inside one
+ * `thread/resume` response, and a long Session exceeds the App Server JSONL line limit, which fails
+ * the resume as a protocol error. Only create and resume share the rest of the param shape.
+ */
+function codexThreadParams(
+  method: "thread/start" | "thread/resume",
+  expectedThreadId: string | undefined,
+): Record<string, unknown> {
+  // An exact resume always carries the bound thread id. `JSON.stringify` drops the key when it is
+  // absent, so a resume without one still sends no `threadId`.
+  return method === "thread/start" ? {} : { threadId: expectedThreadId, excludeTurns: true };
 }
 
 function parseCodexBinding(binding: AgentRuntimeBinding): { threadId: string; hostedToolsHash?: string } {
