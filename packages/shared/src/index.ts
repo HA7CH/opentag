@@ -615,3 +615,4 @@ export {
   serializeDiagnostic,
 } from "./structured-errors.js";
 export * from "./task.js";
+export * from "./web-tools.js";
