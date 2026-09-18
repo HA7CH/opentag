@@ -22,6 +22,8 @@ export interface RunnerInstanceSpec extends RunnerInstanceIdentityInput {
   environment: ChannelName;
   backendUrl: string;
   bootstrapToken: string;
+  /** E5: arm the Runner-side workspace restore/save path; set only for workspace-enabled allocations. */
+  workspacePersistence?: boolean;
 }
 export interface CloudRunInstanceView {
   name: string;
@@ -32,6 +34,8 @@ export interface CloudRunInstanceView {
   terminalState?: string;
   reconciling: boolean;
   etag?: string;
+  /** Provider-observed allocation capability; undefined is unverified, never legacy proof. */
+  workspacePersistence?: boolean;
   policy?: {
     ingress: unknown;
     defaultUriDisabled: unknown;
@@ -65,6 +69,18 @@ function strings(value: unknown): Record<string, string> {
   return Object.fromEntries(
     Object.entries(record(value)).filter((e): e is [string, string] => typeof e[1] === "string"),
   );
+}
+
+function workspacePersistenceOf(value: unknown): boolean | undefined {
+  if (!Array.isArray(value) || value.length !== 1) return undefined;
+  const container = record(value[0]);
+  if (container.name !== "runner") return undefined;
+  if (container.env === undefined) return false;
+  if (!Array.isArray(container.env)) return undefined;
+  if (container.env.some((entry) => typeof record(entry).name !== "string")) return undefined;
+  const flags = container.env.map(record).filter((entry) => entry.name === "OPENTAG_RUNNER_WORKSPACE_PERSISTENCE");
+  if (flags.length === 0) return false;
+  return flags.length === 1 && flags[0]?.value === "1" && flags[0]?.valueSource === undefined ? true : undefined;
 }
 export class CloudRunAdmin {
   readonly #config: CloudRunAdminConfig;
@@ -126,11 +142,13 @@ export class CloudRunAdmin {
     if (typeof body.uid !== "string" || !body.uid || body.uid.length > 128)
       throw new CloudRunAdminError("unknown", "Cloud Run read returned no UID");
     const vpc = record(body.vpcAccess);
+    const workspacePersistence = workspacePersistenceOf(body.containers);
     return {
       name,
       uid: body.uid,
       labels: strings(body.labels),
       reconciling: body.reconciling === true,
+      ...(workspacePersistence === undefined ? {} : { workspacePersistence }),
       networkInterfaces: Array.isArray(vpc.networkInterfaces)
         ? vpc.networkInterfaces.map((n) => {
             const nic = record(n);
@@ -310,6 +328,7 @@ export class CloudRunAdmin {
         { name: "OPENTAG_RUNNER_BACKEND_URL", value: spec.backendUrl },
         { name: "OPENTAG_RUNNER_BOOTSTRAP_TOKEN", value: spec.bootstrapToken },
         { name: "OPENTAG_RUNNER_SANDBOX_NAME", value: runnerInstanceId(spec) },
+        ...(spec.workspacePersistence === true ? [{ name: "OPENTAG_RUNNER_WORKSPACE_PERSISTENCE", value: "1" }] : []),
       ],
       resources: { limits: { cpu: "1", memory: "1Gi" }, cpuIdle: false },
       // The Instance ingress policy and the default TCP startup probe both require exactly this

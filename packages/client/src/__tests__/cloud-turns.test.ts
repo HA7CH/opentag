@@ -260,6 +260,104 @@ describe("CloudTurnRunner", () => {
     };
   }
 
+  it("holds the Turn slot and publication until its workspace checkpoint succeeds", async () => {
+    const saving = deferred<void>();
+    const saved = deferred<void>();
+    const h = harness({
+      runnerOptions: {
+        checkpoint: async () => {
+          saving.resolve();
+          await saved.promise;
+        },
+      },
+    });
+    await h.runner.handleDeliveryRun(runFrame(h.delivery));
+    await h.runner.handleVerified(verifiedFrame(h.delivery.requestId));
+    await saving.promise;
+    expect((await h.journal.read(h.delivery.deliveryId))?.phase).toBe("started");
+    expect(h.runner.activeDeliveryId).toBe(h.delivery.deliveryId);
+    expect(reportsOf(h.sent)).toHaveLength(0);
+    const entry = await h.journal.read(h.delivery.deliveryId);
+    if (!entry) throw new Error("missing journal entry");
+    await h.runner.handleQuery({
+      type: "delivery:query",
+      deliveryId: entry.deliveryId,
+      turnId: entry.turnId,
+      requestId: randomUUID(),
+    });
+    await h.runner.reconcile();
+    expect(reportsOf(h.sent)).toHaveLength(0);
+    saved.resolve();
+    await h.runner.waitForActive();
+    expect(reportsOf(h.sent)).toHaveLength(1);
+    expect(h.runner.activeDeliveryId).toBeUndefined();
+    await h.runner.close();
+  });
+
+  it("retains the honest result after a failed save without rerunning the external action", async () => {
+    const failed = vi.fn();
+    const h = harness({
+      runnerOptions: {
+        checkpoint: async () => {
+          throw new Error("storage unavailable");
+        },
+        onPersistenceError: failed,
+      },
+    });
+    await h.runner.handleDeliveryRun(runFrame(h.delivery));
+    await h.runner.handleVerified(verifiedFrame(h.delivery.requestId));
+    await h.runner.waitForActive();
+    expect(failed).toHaveBeenCalledOnce();
+    expect(reportsOf(h.sent)).toHaveLength(1);
+    expect((await h.journal.read(h.delivery.deliveryId))?.report).toMatchObject({
+      outcome: "failed",
+      errorReason: "workspace_failed",
+      executionEffects: "completed",
+    });
+    expect(reportsOf(h.sent)[0]?.report.finalText).toContain("not durably saved");
+    // Reconciliation publishes the failure even when saving cannot recover.
+    await h.runner.reconcile();
+    expect(reportsOf(h.sent)).toHaveLength(2);
+    expect(h.workerInputs).toHaveLength(1);
+    await h.runner.close();
+  });
+
+  it("drains release reports through their Server acknowledgment and refuses new custody", async () => {
+    const h = harness();
+    await h.runner.handleDeliveryRun(runFrame(h.delivery));
+    await h.runner.handleVerified(verifiedFrame(h.delivery.requestId));
+    await h.runner.waitForActive();
+    let drained = false;
+    const draining = h.runner.drainForRelease(1_000).then(() => {
+      drained = true;
+    });
+    await waitFor(() => reportsOf(h.sent).length >= 2, "release report replay");
+    expect(drained).toBe(false);
+    const next = cloudDeliveryFixture({ sessionId: h.delivery.sessionId });
+    const receipts = h.sent.filter((frame) => frame.type === "delivery:received").length;
+    await h.runner.handleDeliveryRun(runFrame(next));
+    expect(h.sent.filter((frame) => frame.type === "delivery:received")).toHaveLength(receipts);
+    const report = reportsOf(h.sent)[0]?.report;
+    if (!report) throw new Error("missing report");
+    await h.runner.handleReportAck({
+      type: "delivery:report:ack",
+      turnId: report.turnId,
+      resultHash: report.resultHash,
+      status: "recorded",
+      requestId: randomUUID(),
+    });
+    await draining;
+    expect(await h.journal.list()).toEqual([]);
+  });
+
+  it("keeps an unacknowledged report durable when release times out", async () => {
+    const h = harness();
+    await h.runner.handleDeliveryRun(runFrame(h.delivery));
+    await expect(h.runner.drainForRelease(5)).rejects.toThrow("not acknowledged");
+    expect((await h.journal.read(h.delivery.deliveryId))?.phase).toBe("reported");
+    expect(h.workerInputs).toHaveLength(0);
+  });
+
   it("journals the receipt before acknowledging and never executes without the verified boundary", async () => {
     const h = harness();
     await h.runner.handleDeliveryRun(runFrame(h.delivery));
