@@ -8,6 +8,7 @@ import {
   ConfigRuntimeWebPolicy,
   createRuntimeCredentialServices,
   KindAwareComputerAuthVerifier,
+  type McpUsableMountReader,
   RouterWebClient,
   type RuntimeConnectionFence,
   type RuntimeControlAuthority,
@@ -38,6 +39,11 @@ import { VerifiedTreeHead } from "./services/github-proxy/verified-tree-head.js"
  * fence. It is composed with the Local registry for credential opens/sweeps/revocation routing,
  * while the optional injected `cloudControl` verifier keeps its own Computer-level authority.
  */
+/** The MCP gateway wiring, if this deployment supplied a mount reader. */
+function mcpCredentialOptions(mounts: McpUsableMountReader | undefined): { mcp?: { mounts: McpUsableMountReader } } {
+  return mounts ? { mcp: { mounts } } : {};
+}
+
 export async function createPlatformRuntime(options: {
   config: ServerConfig;
   database: DatabaseClient;
@@ -45,6 +51,11 @@ export async function createPlatformRuntime(options: {
   registry: ConnectionRegistry;
   custody: RuntimeCustodyStore;
   machineAuth: ComputerAuthVerifier;
+  /**
+   * Reader for "does this Agent have a usable MCP mount". Present enables the MCP gateway; absent
+   * keeps it fully off, with no grant, no token, and no route.
+   */
+  mcpMounts?: McpUsableMountReader;
   github?: GitHubIntegrationComposition;
   /**
    * Explicit trusted Cloud control verifier/activity port, owned by Computer/Cloud
@@ -122,6 +133,7 @@ export async function createPlatformRuntime(options: {
           },
         }
       : {}),
+    ...mcpCredentialOptions(options.mcpMounts),
     ...(options.logger ? { logger: options.logger } : {}),
   });
   const unsubscribe = executions.onClose(({ executionId }) => {

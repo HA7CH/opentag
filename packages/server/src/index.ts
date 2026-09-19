@@ -77,14 +77,18 @@ import {
 } from "./services/im-bindings/slack/index.js";
 import { SlackWebhookReceiptStore } from "./services/im-bindings/slack/webhook-receipt-store.js";
 import {
+  MCP_RUNTIME_MAX_CONCURRENT_PER_ACCOUNT,
+  MCP_RUNTIME_TIMEOUT_MS,
   McpAuthorizationService,
   McpCredentialCipher,
+  McpGatewayService,
   McpOAuthClient,
   McpOAuthFlowService,
   McpOutboundFetcher,
   McpProbe,
   McpRefreshWorker,
   McpServerService,
+  McpUpstreamCaller,
 } from "./services/mcp/index.js";
 import { OnboardingResetService } from "./services/onboarding-reset/index.js";
 import { EffectiveRuntimeSnapshotAssembler } from "./services/runtime-config/index.js";
@@ -396,6 +400,13 @@ export async function startServer(): Promise<void> {
     // owning Runner connection through the controller created below. Declared here because the
     // platform runtime is composed before the delivery owner.
     let cloudDeliveryOwnerRef: CloudDeliveryOwner | undefined;
+    /*
+     * Built here rather than with the rest of the MCP services below, because the platform runtime
+     * is composed first and needs this to decide whether an execution may open the MCP service. The
+     * service is stateless over the database, so constructing it early costs nothing and keeps one
+     * instance shared by the management routes and the runtime gateway.
+     */
+    const mcpServers = new McpServerService({ database });
     const platformRuntime = await createPlatformRuntime({
       config,
       database,
@@ -403,6 +414,7 @@ export async function startServer(): Promise<void> {
       registry,
       custody,
       machineAuth: machineAuthService,
+      mcpMounts: mcpServers,
       ...(github ? { github } : {}),
       ...cloudPlatformRuntimeOptions(cloudRuntimeFence, (computerId, instanceId, frame) => {
         cloudDeliveryOwnerRef?.sendRevocationToInstance(computerId, instanceId, frame);
@@ -611,7 +623,17 @@ export async function startServer(): Promise<void> {
      * HTTP is permitted only on a development deployment that explicitly opted in.
      */
     const mcpFetcher = new McpOutboundFetcher({ allowLoopback: config.mcpAllowLoopback });
-    const mcpServers = new McpServerService({ database });
+    /*
+     * A second fetcher for runtime tool calls. It enforces the same URL policy — the gate, the
+     * redirect refusal, the response bound are all properties of the class — but carries its own
+     * deadline and its own per-Account concurrency counter, because a tool call is not a probe: it
+     * runs as long as the tool does, and a background probe must never be able to starve a live turn.
+     */
+    const mcpRuntimeFetcher = new McpOutboundFetcher({
+      allowLoopback: config.mcpAllowLoopback,
+      timeoutMs: MCP_RUNTIME_TIMEOUT_MS,
+      maxConcurrentPerAccount: MCP_RUNTIME_MAX_CONCURRENT_PER_ACCOUNT,
+    });
     const mcpCipher = new McpCredentialCipher(applicationCipher);
     const mcpOAuth = new McpOAuthClient({ fetcher: mcpFetcher, publicUrl: config.publicUrl });
     const mcpProbe = new McpProbe({ fetcher: mcpFetcher });
@@ -620,6 +642,16 @@ export async function startServer(): Promise<void> {
       cipher: mcpCipher,
       probe: mcpProbe,
       servers: mcpServers,
+    });
+    /*
+     * The runtime gateway. It shares the one outbound fetcher with the management plane, so a
+     * runtime tool call is bound by the same URL policy, per-Account concurrency limit, redirect
+     * refusal, and response cap that a probe is.
+     */
+    const mcpGatewayService = new McpGatewayService({
+      servers: mcpServers,
+      authorizations: mcpAuthorization,
+      upstream: new McpUpstreamCaller({ fetcher: mcpRuntimeFetcher }),
     });
     const mcpFlows = new McpOAuthFlowService({ database, cipher: mcpCipher, oauth: mcpOAuth, servers: mcpServers });
     const mcpRefreshWorker = new McpRefreshWorker({
@@ -711,6 +743,16 @@ export async function startServer(): Promise<void> {
       runtimeProviderProxy: { transport: platformRuntime.credentials.transport },
       ...(platformRuntime.credentials.web
         ? { runtimeWeb: { machineAuth: platformRuntime.auth, service: platformRuntime.credentials.web } }
+        : {}),
+      ...(platformRuntime.credentials.mcp
+        ? {
+            mcpGateway: {
+              tokens: platformRuntime.credentials.mcp.tokens,
+              authorizer: platformRuntime.credentials.mcp.authorizer,
+              service: mcpGatewayService,
+              logger: serviceLogger("mcp-gateway"),
+            },
+          }
         : {}),
       runtime: {
         runtimeCredentialOwner: platformRuntime.credentials.owner,
