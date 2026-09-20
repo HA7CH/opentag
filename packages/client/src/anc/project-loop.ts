@@ -177,6 +177,7 @@ function dispatch(s: AncSnapshot, c: Command<"task.dispatch">): void {
     reviewerRole: c.reviewerRole,
     status: "ready",
     revision: 1,
+    artifactHistory: [],
   };
 }
 function reviseTask(s: AncSnapshot, c: Command<"task.revise">): void {
@@ -198,7 +199,12 @@ function report(s: AncSnapshot, c: Command<"task.report_result">): void {
   const t = task(s, c.taskId);
   requireCondition(p.status === "active" && !p.pendingBrief, "Project is not ready for results");
   requireCondition(t.status === "running" && t.revision === c.expectedRevision, "Stale or non-running task result");
+  requireCondition(
+    !t.artifactHistory.some((a) => a.revision === c.artifact.revision),
+    "Artifact revision was already used",
+  );
   supersedeTaskRequests(s, t.id);
+  t.artifactHistory.push(c.artifact);
   t.artifact = c.artifact;
   t.status = "waiting_human";
   humanRequest(
@@ -253,6 +259,8 @@ export interface AncLoopOptions {
   readonly now?: () => number;
   /** Must verify local bytes, expected digest, and required checks before accepting model claims. */
   readonly verifyArtifact: (artifact: AncArtifact) => Promise<void>;
+  /** Review copies must be outside agent-writable workspaces. Do not alter revision or digest. */
+  readonly retainArtifact?: (artifact: AncArtifact) => Promise<AncArtifact>;
 }
 
 export class AncProjectLoop {
@@ -282,11 +290,38 @@ export class AncProjectLoop {
         return { snapshot: previous, result: previous };
       }
       const snapshot = previous ? structuredClone(previous) : this.create(command);
-      if (command.operation === "task.report_result") await this.options.verifyArtifact(command.artifact);
+      await this.prepareArtifact(snapshot, caller, command);
       this.apply(snapshot, caller, command);
       snapshot.events.push({ id: command.eventId, digest: hash, at: this.#now(), operation: command.operation });
       return { snapshot, result: structuredClone(snapshot) };
     });
+  }
+
+  private async prepareArtifact(s: AncSnapshot, caller: AncCaller, c: AncCommand): Promise<void> {
+    if (c.operation === "task.report_result") {
+      await this.options.verifyArtifact(c.artifact);
+      if (this.options.retainArtifact) {
+        const retained = await this.options.retainArtifact(c.artifact);
+        requireCondition(
+          retained.revision === c.artifact.revision && retained.sha256 === c.artifact.sha256,
+          "Retention changed artifact identity",
+        );
+        c.artifact = retained;
+        await this.options.verifyArtifact(retained);
+      }
+    } else if (c.operation === "human.respond" && c.decision === "approve") {
+      const { r, t } = this.validateResponse(s, caller, c);
+      if (r.purpose === "task_review" && t?.artifact) await this.options.verifyArtifact(t.artifact);
+    }
+  }
+
+  /** Check again before external delivery; the adapter must upload these same verified bytes. */
+  async verifyDelivery(e: AncEffect, s: AncSnapshot): Promise<void> {
+    const review = e.requestId ? s.project.requests[e.requestId]?.purpose === "task_review" : false;
+    if (e.kind !== "artifact.publish" && !((e.kind === "human.send" || e.kind === "human.remind") && review)) return;
+    const artifact = e.taskId ? s.project.tasks[e.taskId]?.artifact : undefined;
+    requireCondition(artifact && artifact.revision === e.artifactRevision, "Missing delivery artifact revision");
+    await this.options.verifyArtifact(artifact);
   }
 
   private create(c: AncCommand): AncSnapshot {

@@ -53,7 +53,7 @@ export {
   type JsonValue,
   type ResumeAgentRuntimeRequest,
 } from "./agent-runtime/types.js";
-export { localArtifactVerifier } from "./anc/artifacts.js";
+export { localArtifactRetainer, localArtifactVerifier, readVerifiedAncArtifact } from "./anc/artifacts.js";
 export { AncDeferred, type AncEffectAdapter, AncEffectRunner, AncSafeRetry } from "./anc/effect-runner.js";
 export {
   AncFeishuGateway,

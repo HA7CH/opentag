@@ -230,9 +230,15 @@ export type AgentProviderRunEvent =
   // emit message/tool lifecycles directly within the Run.
   | { readonly type: "model_turn_started"; readonly modelTurnId: string }
   | { readonly type: "model_turn_completed"; readonly modelTurnId: string }
-  | { readonly type: "message_started"; readonly messageId: string }
+  | { readonly type: "message_started"; readonly messageId: string; readonly phase?: "commentary" | "final_answer" }
   | { readonly type: "message_delta"; readonly messageId: string; readonly delta: string }
-  | { readonly type: "message_completed"; readonly messageId: string; readonly text: string }
+  | {
+      readonly type: "message_completed";
+      readonly messageId: string;
+      readonly text: string;
+      /** Public assistant classification, never private reasoning. Absence means unknown. */
+      readonly phase?: "commentary" | "final_answer";
+    }
   | {
       readonly type: "tool_started";
       readonly toolCallId: string;

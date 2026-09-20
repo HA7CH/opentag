@@ -20,6 +20,7 @@ export const AncTaskSchema = z.object({
   revision: z.number().int().positive(),
   sessionId: Text.optional(),
   artifact: AncArtifactSchema.optional(),
+  artifactHistory: z.array(AncArtifactSchema).default([]),
 });
 export const AncHumanRequestSchema = z.object({
   id: AncId,

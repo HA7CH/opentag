@@ -3,6 +3,7 @@ import { type AncProjectLoop, ancEffectIsCurrent, noteAncEffectProblem } from ".
 import type { AncEffect, AncSnapshot } from "./schemas.js";
 
 export class AncSafeRetry extends Error {}
+class AncInvalidDelivery extends Error {}
 /** Scheduling pressure before any provider action is not a failed attempt. */
 export class AncDeferred extends Error {}
 type EffectWork = { id: string; effect: AncEffect; snapshot: AncSnapshot };
@@ -20,9 +21,14 @@ function recordEffectFailure(s: AncSnapshot, e: AncEffect, error: unknown, now: 
     e.error = "waiting_for_execution_slot_or_reconciliation";
     return;
   }
-  e.status = retryStatus(error, e.attempts);
+  e.status = error instanceof AncInvalidDelivery ? "failed" : retryStatus(error, e.attempts);
   e.nextAttemptAt = now + 1000 * 2 ** e.attempts;
-  e.error = error instanceof AncSafeRetry ? "retryable_transport_failure" : "outcome_requires_reconciliation";
+  e.error =
+    error instanceof AncInvalidDelivery
+      ? "artifact_verification_failed"
+      : error instanceof AncSafeRetry
+        ? "retryable_transport_failure"
+        : "outcome_requires_reconciliation";
   if (e.status === "failed" || e.status === "unknown") noteAncEffectProblem(s, e);
 }
 
@@ -185,6 +191,11 @@ export class AncEffectRunner {
     try {
       const e = claimed.effects[candidate.id];
       if (!e) throw new Error("Missing claimed effect");
+      try {
+        await this.loop.verifyDelivery(e, claimed);
+      } catch {
+        throw new AncInvalidDelivery("Artifact verification failed before any external send");
+      }
       const receipt = await this.adapter.perform(e, claimed);
       await this.loop.completeEffect(id, e.id, receipt);
     } catch (error) {

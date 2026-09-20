@@ -495,16 +495,7 @@ export class CodexAgentRuntime extends BaseAgentRuntime {
     const id = requireString(item.id, `${method} item has no id`);
     const type = requireString(item.type, `${method} item has no type`);
     if (type === "agentMessage") {
-      if (method === "item/started") {
-        await this.#ensureMessageStarted(id);
-        return;
-      }
-      const text = requireString(item.text, "completed agent message has no text", true);
-      const phase = typeof item.phase === "string" ? item.phase : undefined;
-      await this.#ensureMessageStarted(id);
-      this.#completedMessages.set(id, { text, ...(phase ? { phase } : {}) });
-      await context.emit({ type: "message_completed", messageId: id, text });
-      this.#activeMessages.delete(id);
+      await this.#handleAgentMessage(method, id, item);
       return;
     }
     if (!TOOL_ITEM_TYPES.has(type)) return;
@@ -526,11 +517,35 @@ export class CodexAgentRuntime extends BaseAgentRuntime {
     this.#activeTools.delete(id);
   }
 
-  async #ensureMessageStarted(messageId: string): Promise<void> {
+  async #handleAgentMessage(
+    method: "item/completed" | "item/started",
+    id: string,
+    item: Record<string, unknown>,
+  ): Promise<void> {
+    const context = this.#requireContext();
+    if (method === "item/started") {
+      await this.#ensureMessageStarted(id, publicMessagePhase(item.phase));
+      return;
+    }
+    const text = requireString(item.text, "completed agent message has no text", true);
+    const phase = typeof item.phase === "string" ? item.phase : undefined;
+    const publicPhase = publicMessagePhase(phase);
+    await this.#ensureMessageStarted(id, publicPhase);
+    this.#completedMessages.set(id, { text, ...(phase ? { phase } : {}) });
+    await context.emit({
+      type: "message_completed",
+      messageId: id,
+      text,
+      ...(publicPhase ? { phase: publicPhase } : {}),
+    });
+    this.#activeMessages.delete(id);
+  }
+
+  async #ensureMessageStarted(messageId: string, phase?: "commentary" | "final_answer"): Promise<void> {
     if (this.#activeMessages.has(messageId)) return;
     if (this.#completedMessages.has(messageId)) throw protocolError("Codex reused a completed agent message ID");
     this.#activeMessages.set(messageId, "");
-    await this.#requireContext().emit({ type: "message_started", messageId });
+    await this.#requireContext().emit({ type: "message_started", messageId, ...(phase ? { phase } : {}) });
   }
 
   async #ensureToolStarted(toolCallId: string, name: string, input: Record<string, unknown>): Promise<void> {
@@ -548,10 +563,12 @@ export class CodexAgentRuntime extends BaseAgentRuntime {
     const terminalItems = new Map(
       turn.items.filter((item) => typeof item.id === "string").map((item) => [item.id as string, item] as const),
     );
+    const closingMessages = new Set(this.#activeMessages.keys());
     for (const [messageId, deltaText] of this.#activeMessages) {
       const item = terminalItems.get(messageId);
       const text = typeof item?.text === "string" ? item.text : deltaText;
-      await context.emit({ type: "message_completed", messageId, text });
+      const phase = publicMessagePhase(item?.phase);
+      await context.emit({ type: "message_completed", messageId, text, ...(phase ? { phase } : {}) });
       this.#activeMessages.delete(messageId);
     }
     for (const [toolCallId, name] of this.#activeTools) {
@@ -570,6 +587,17 @@ export class CodexAgentRuntime extends BaseAgentRuntime {
         ...(item ? { output: toJsonValue(item) } : {}),
       });
       this.#activeTools.delete(toolCallId);
+    }
+    await this.#completeTerminalMessages(turn.items, closingMessages);
+  }
+
+  async #completeTerminalMessages(items: ParsedTurn["items"], closingMessages: ReadonlySet<string>): Promise<void> {
+    for (const item of items) {
+      if (item.type !== "agentMessage" || typeof item.id !== "string") continue;
+      if (closingMessages.has(item.id) || this.#completedMessages.has(item.id)) continue;
+      // A terminal snapshot can contain an answer whose item notifications were not delivered.
+      // Replay its actual identity and public phase, never invent one from run output text.
+      await this.#handleItem("item/completed", item);
     }
   }
 
@@ -1439,4 +1467,8 @@ function requireString(value: unknown, message: string, allowEmpty = false): str
 
 function isNonNegativeNumber(value: unknown): value is number {
   return typeof value === "number" && Number.isFinite(value) && value >= 0;
+}
+
+function publicMessagePhase(value: unknown): "commentary" | "final_answer" | undefined {
+  return value === "commentary" || value === "final_answer" ? value : undefined;
 }

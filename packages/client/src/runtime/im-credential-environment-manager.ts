@@ -97,6 +97,33 @@ export class ImCredentialEnvironmentManager {
     return this.#activeSlackConfigDirs.get(sessionId);
   }
 
+  /**
+   * Authorize background delivery through the existing Session binding.
+   * No CLI file is written or removed, so this cannot race an active Turn's cleanup.
+   */
+  async feishuToken(
+    request: ImCredentialGrantSubject,
+    signal?: AbortSignal,
+  ): Promise<{ appId: string; brand: "feishu" | "lark"; token: string }> {
+    if (this.#closed) throw new ImCredentialEnvironmentError("client_shutdown");
+    try {
+      const startupFailure = await this.#startupCleanup;
+      if (startupFailure) throw startupFailure;
+      const result = await this.#requestGrant(request, signal);
+      if (result.status === "rejected") throw new ImCredentialEnvironmentError(result.code);
+      if (result.grant.provider !== "feishu") throw new ImCredentialEnvironmentError("provider_mismatch");
+      signal?.throwIfAborted();
+      const token = await this.#exchangeFeishuToken(result.grant, signal);
+      if (this.#closed) throw new ImCredentialEnvironmentError("client_shutdown");
+      signal?.throwIfAborted();
+      if (!token.trim()) throw new ImCredentialEnvironmentError("tenant_token_exchange_failed");
+      return { appId: result.grant.appId, brand: result.grant.teamBrand, token };
+    } catch (error) {
+      // Do not expose exchange failures containing app secrets or remove another Turn's projection.
+      throw credentialEnvironmentError(error, signal, "credential_grant_failed");
+    }
+  }
+
   async prepare(request: ImCredentialGrantSubject, signal?: AbortSignal): Promise<PreparedImCredentialEnvironment> {
     if (this.#closed) throw new ImCredentialEnvironmentError("client_shutdown");
     try {

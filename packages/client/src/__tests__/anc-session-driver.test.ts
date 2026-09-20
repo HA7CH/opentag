@@ -172,6 +172,7 @@ describe("ANC exact-thread execution", () => {
         reviewerRole: "owner",
         status: "running",
         revision: 1,
+        artifactHistory: [],
         sessionId: await f.driver.create(effect(`create-${id}`, "session.create", id)),
       };
     }
