@@ -137,7 +137,7 @@ const EMPTY_TEXT = {
   idle: "本轮进展已记录，尚未产生正式回复。",
 };
 
-function cardElements(state: AncPublicOutput, card: PublicCard): JsonValue[] {
+function cardElements(state: AncPublicOutput, card: PublicCard, limit: number): JsonValue[] {
   const messages = state.messages.filter((message) => message.cardId === card.id);
   const answer = messages.find((message) => message.id === card.answerId);
   const progress = messages.filter((message) => message.id !== card.answerId && message.text).slice(-6);
@@ -148,30 +148,43 @@ function cardElements(state: AncPublicOutput, card: PublicCard): JsonValue[] {
       element_id: "progress",
       expanded: false,
       header: { title: { tag: "plain_text", content: "处理进展" } },
-      elements: progress.map((message) => ({ tag: "markdown", content: preview(message.text, 500) })),
+      elements: progress.map((message) => ({
+        tag: "markdown",
+        content: preview(message.text, Math.min(500, Math.floor(limit / 10))),
+      })),
     });
   elements.push({
     tag: "markdown",
     element_id: "main_text",
-    content: answer?.text ? preview(answer.text, 5000) : EMPTY_TEXT[card.status],
+    content: answer?.text ? preview(answer.text, limit) : EMPTY_TEXT[card.status],
   });
   return elements;
+}
+
+function renderCard(state: AncPublicOutput, card: PublicCard, title: string, limit: number): JsonValue {
+  return {
+    schema: "2.0",
+    config: { update_multi: true, width_mode: "default", enable_forward: false },
+    header: {
+      title: { tag: "plain_text", content: title.slice(0, 60) },
+      subtitle: { tag: "plain_text", content: CARD_LABELS[card.status] },
+      template: card.status === "interrupted" ? "orange" : "blue",
+    },
+    body: { direction: "vertical", vertical_spacing: "8px", elements: cardElements(state, card, limit) },
+  };
 }
 
 /** Card 2.0 data only; this function sends nothing and exposes no approval callbacks. */
 export function renderAncPublicCards(input: AncPublicOutput, title: string): { id: string; card: JsonValue }[] {
   const state = AncPublicOutputSchema.parse(input);
-  return state.cards.map((card) => ({
-    id: card.id,
-    card: {
-      schema: "2.0",
-      config: { update_multi: true, width_mode: "default", enable_forward: false },
-      header: {
-        title: { tag: "plain_text", content: title.slice(0, 60) },
-        subtitle: { tag: "plain_text", content: CARD_LABELS[card.status] },
-        template: card.status === "interrupted" ? "orange" : "blue",
-      },
-      body: { direction: "vertical", vertical_spacing: "8px", elements: cardElements(state, card) },
-    },
-  }));
+  return state.cards.map((card) => {
+    let limit = 5000;
+    let content = renderCard(state, card, title, limit);
+    // UTF-8 and escaped markup can exceed a character-count estimate.
+    while (Buffer.byteLength(JSON.stringify(content), "utf8") > 27000 && limit > 128) {
+      limit = Math.floor(limit / 2);
+      content = renderCard(state, card, title, limit);
+    }
+    return { id: card.id, card: content };
+  });
 }

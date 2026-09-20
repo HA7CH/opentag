@@ -1,8 +1,17 @@
 import { createHash } from "node:crypto";
 import { join } from "node:path";
 import { z } from "zod";
+import type { JsonValue } from "../agent-runtime/types.js";
 import { ensurePrivateDirectory, readDurableJson, writeDurableJson } from "../storage/durable-file.js";
 import { AncDeferred, AncSafeRetry } from "./effect-runner.js";
+import {
+  type AncCardTransport,
+  ancCardDigest,
+  AncFeishuReceiptSchema as Ledger,
+  reconcileAncFeishuCard,
+  serializeAncCard,
+  updateAncFeishuCard,
+} from "./feishu-card-ledger.js";
 import { AncFileStore } from "./store.js";
 
 const ExternalId = z.string().regex(/^[A-Za-z0-9_-]{1,128}$/);
@@ -28,13 +37,6 @@ const Message = z.object({
 });
 const Envelope = z.object({ code: z.number().int(), data: z.unknown().optional() });
 const Sent = z.object({ message_id: ExternalId, chat_id: ExternalId });
-const Ledger = z.object({
-  digest: z.string(),
-  status: z.enum(["sending", "sent", "retryable", "rejected"]),
-  attempts: z.number().int().nonnegative(),
-  messageId: ExternalId.optional(),
-  chatId: ExternalId.optional(),
-});
 export const AncFeishuScopeSchema = z.object({
   appId: ExternalId,
   tenantKey: ExternalId,
@@ -147,12 +149,94 @@ export class AncFeishuGateway {
     if (!text.trim() || Buffer.byteLength(text, "utf8") > 16000) throw new Error("Invalid short message");
     await ensurePrivateDirectory(this.options.directory, this.options.directory);
     await this.#locks.initialize();
-    return this.#locks.lock(sha(deliveryId), () => this.sendLocked(deliveryId, target, text, signal));
+    return this.#locks.lock(sha(deliveryId), () =>
+      this.sendLocked(deliveryId, target, { type: "text", content: text }, signal),
+    );
   }
 
-  private async sendLocked(id: string, target: AncFeishuTarget, text: string, signal?: AbortSignal): Promise<string> {
+  async sendCard(deliveryId: string, input: AncFeishuTarget, card: JsonValue, signal?: AbortSignal): Promise<string> {
+    const target = this.allowedTarget(input);
+    ExternalId.parse(deliveryId);
+    const content = serializeAncCard(card);
+    await ensurePrivateDirectory(this.options.directory, this.options.directory);
+    await this.#locks.initialize();
+    return this.#locks.lock(sha(deliveryId), () =>
+      this.sendLocked(deliveryId, target, { type: "interactive", content }, signal),
+    );
+  }
+
+  async updateCard(deliveryId: string, revision: number, card: JsonValue, signal?: AbortSignal): Promise<string> {
+    ExternalId.parse(deliveryId);
+    await this.#locks.initialize();
+    return this.#locks.lock(sha(deliveryId), async () => {
+      const path = this.ledgerPath(deliveryId);
+      const record = await readDurableJson(path, (value) => Ledger.parse(value));
+      if (!record?.target) throw new Error("Unknown ANC card destination");
+      this.allowedTarget(record.target);
+      return updateAncFeishuCard(path, record, revision, card, await this.cardTransport(signal));
+    });
+  }
+
+  async reconcileCard(deliveryId: string, revision: number, signal?: AbortSignal): Promise<string | undefined> {
+    ExternalId.parse(deliveryId);
+    await this.#locks.initialize();
+    return this.#locks.lock(sha(deliveryId), async () => {
+      const path = this.ledgerPath(deliveryId);
+      const record = await readDurableJson(path, (value) => Ledger.parse(value));
+      if (!record?.target) return undefined;
+      this.allowedTarget(record.target);
+      return reconcileAncFeishuCard(path, record, revision, await this.cardTransport(signal));
+    });
+  }
+
+  private async cardTransport(signal?: AbortSignal): Promise<AncCardTransport> {
+    const headers = await this.headers();
+    signal?.throwIfAborted();
+    const request = async (path: string, init?: RequestInit) =>
+      this.#fetch(this.url(path), {
+        ...init,
+        headers,
+        redirect: "error",
+        signal: AbortSignal.any([AbortSignal.timeout(15000), ...(signal ? [signal] : [])]),
+      });
+    return {
+      patch: (id, content) => request(`messages/${id}`, { method: "PATCH", body: JSON.stringify({ content }) }),
+      read: async (id, chatId) => {
+        const response = await request(`messages/${id}?user_id_type=open_id&card_msg_content_type=user_card_content`);
+        const result = Envelope.parse(await response.json());
+        if (!response.ok || result.code !== 0) throw new Error("Cannot reconcile the Feishu card");
+        const items = z.object({ items: z.array(z.unknown()) }).parse(result.data).items;
+        const item = items
+          .map((value) => Message.safeParse(value))
+          .find((value) => value.success && value.data.message_id === id);
+        if (!item?.success) throw new Error("Exact card not returned");
+        const message = item.data;
+        if (message.deleted || message.chat_id !== chatId || message.msg_type !== "interactive")
+          throw new Error("Card identity mismatch");
+        const sender = message.sender;
+        if (
+          sender.sender_type !== "app" ||
+          sender.id_type !== "app_id" ||
+          sender.id !== this.#scope.appId ||
+          sender.tenant_key !== this.#scope.tenantKey
+        )
+          throw new Error("Card sender mismatch");
+        return message.body.content;
+      },
+    };
+  }
+
+  private async sendLocked(
+    id: string,
+    target: AncFeishuTarget,
+    message: { type: "text" | "interactive"; content: string },
+    signal?: AbortSignal,
+  ): Promise<string> {
     const path = this.ledgerPath(id);
-    const digest = sha({ scope: this.#scope.appId, target, text });
+    const digest =
+      message.type === "text"
+        ? sha({ scope: this.#scope.appId, target, text: message.content })
+        : sha({ scope: this.#scope.appId, target, card: JSON.parse(message.content) });
     const previous = await readDurableJson(path, (value) => Ledger.parse(value));
     if (previous && previous.digest !== digest) throw new Error("Delivery ID reused with different content");
     if (previous?.status === "sent" && previous.messageId) return previous.messageId;
@@ -162,7 +246,14 @@ export class AncFeishuGateway {
       throw new Error("Feishu delivery is blocked");
     const headers = await this.headers();
     signal?.throwIfAborted();
-    const record: z.infer<typeof Ledger> = { digest, status: "sending", attempts: (previous?.attempts ?? 0) + 1 };
+    const record: z.infer<typeof Ledger> = {
+      digest,
+      status: "sending",
+      attempts: (previous?.attempts ?? 0) + 1,
+      msgType: message.type,
+      target,
+      ...(message.type === "interactive" ? { cardDigest: ancCardDigest(JSON.parse(message.content)) } : {}),
+    };
     await writeDurableJson(path, record);
     // Persist before POST. A timeout, redirect, malformed reply, or lost receipt leaves "sending".
     const response = await this.#fetch(this.url(`messages?receive_id_type=${target.type}`), {
@@ -171,8 +262,8 @@ export class AncFeishuGateway {
       redirect: "error",
       body: JSON.stringify({
         receive_id: target.id,
-        msg_type: "text",
-        content: JSON.stringify({ text }),
+        msg_type: message.type,
+        content: message.type === "text" ? JSON.stringify({ text: message.content }) : message.content,
         uuid: `anc_${sha(id).slice(0, 40)}`,
       }),
       signal: AbortSignal.any([AbortSignal.timeout(15000), ...(signal ? [signal] : [])]),

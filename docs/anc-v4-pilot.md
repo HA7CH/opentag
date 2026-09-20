@@ -33,7 +33,10 @@ deployment configuration stay in access-controlled runtime storage.
 - Failed and uncertain side effects remain visible to the owner; bounded recovery cannot recursively spawn recovery work.
 - Verified, private, content-addressed artifacts and version history. Review and publication recheck the exact bytes.
 - Background Feishu grants do not write or remove another active turn's CLI credential files.
-- Exact-message Feishu identity checks and durable text receipts, not yet connected to production ingress.
+- Exact-message Feishu identity checks and durable text/card creation receipts, not yet connected to production ingress.
+- Consecutive card revisions under a single delivery lock; stale updates cannot overwrite newer content.
+  Unknown PATCH results block later writes until the exact original card JSON is verified.
+  Explicit rate-limit rejections and readback attempts are bounded to three; uncertainty never authorizes a second card.
 - Public assistant message phases survive the Codex bridge, including terminal-snapshot-only messages.
 - A bounded Card 2.0 projection separates actual answers and keeps commentary as progress.
   Steering alone does not create a card. Tool logs, raw reasoning and user input are excluded.
@@ -46,7 +49,7 @@ Run the repository commands in AGENTS.md with its pinned toolchain.
 
 The current foundation passed formatting/lint contracts, serial workspace build,
 bundle reporting and all workspace type checks. Tests passed: 335 root script
-tests and 3,705 workspace unit tests (228 shared, 950 server, 1,182 client,
+tests and 3,726 workspace unit tests (228 shared, 950 server, 1,203 client,
 911 web and 434 CLI).
 
 The Agent Runtime coverage gate reports 100% for its configured scope:
@@ -67,7 +70,9 @@ All checks must be rerun after relevant changes.
 The adapter follows the official
 [message lookup](https://open.feishu.cn/document/server-docs/im-v1/message/get.md)
 and [send-message](https://open.feishu.cn/document/server-docs/im-v1/message/create.md)
-contracts. Provider UUID deduplication is time-limited; durable local receipts
+contracts, plus the [card update](https://open.feishu.cn/document/server-docs/im-v1/message-card/patch.md)
+contract. Card previews are bounded by encoded UTF-8 size, including escaped markup.
+Provider UUID deduplication is time-limited; durable local receipts
 remain authoritative after that window expires.
 
 ## Remaining release gates

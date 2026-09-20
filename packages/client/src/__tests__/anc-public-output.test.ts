@@ -189,3 +189,14 @@ describe("ANC public output projection", () => {
     expect(state.cards.map((card) => card.status)).toEqual(["answered", "answered", "working"]);
   });
 });
+
+it.each(["&", "😀", "中", "<"])("fits the provider byte budget after escaping %s", (character) => {
+  const values: AgentRuntimeEvent[] = [];
+  for (let i = 0; i < 6; i++)
+    values.push(start(`p${i}`, "commentary"), done(`p${i}`, character.repeat(1000), "commentary"));
+  values.push(start("answer", "final_answer"), done("answer", character.repeat(15000), "final_answer"));
+  const rendered = renderAncPublicCards(events(...values), character.repeat(100));
+  expect(rendered).toHaveLength(1);
+  expect(Buffer.byteLength(JSON.stringify(rendered[0]?.card), "utf8")).toBeLessThanOrEqual(27000);
+  expect(JSON.stringify(rendered)).toContain("节选");
+});
