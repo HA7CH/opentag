@@ -37,6 +37,18 @@ export function useAgentSkill(agentId: string, skillId: string | undefined) {
 }
 
 /**
+ * A standalone list invalidator for a write that failed but still moved the row: a revision conflict
+ * means somebody else changed the Skill, so the page refreshes the list even though its own mutation
+ * rejected and there is nothing to reconcile from the response.
+ */
+export function useInvalidateAgentSkills() {
+  const queryClient = useQueryClient();
+  return async (agentId: string) => {
+    await queryClient.invalidateQueries({ queryKey: queryKeys.skills.agentSkills(agentId) });
+  };
+}
+
+/**
  * One shared cache reconciler and invalidator, keyed by the Agent the write targeted.
  *
  * `reconcile` returns the new list derived from the confirmed write; when the list cache has never

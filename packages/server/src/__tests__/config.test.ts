@@ -759,6 +759,8 @@ describe("Skill storage configuration", () => {
       secretAccessKey: "opentag-minio-dev",
       prefix: "skills",
       forcePathStyle: true,
+      gcIntervalSeconds: 3600,
+      gcGraceSeconds: 86400,
     });
     expect(
       parseServerConfig({
@@ -768,6 +770,45 @@ describe("Skill storage configuration", () => {
         OPENTAG_SKILL_STORAGE_FORCE_PATH_STYLE: "false",
       }).skillStorage,
     ).toMatchObject({ prefix: "bundles", forcePathStyle: false });
+  });
+
+  it("defaults the GC window, allows disabling it, and floors the grace period", () => {
+    expect(parseServerConfig({ ...required, ...skillStorageEnvironment }).skillStorage).toMatchObject({
+      gcIntervalSeconds: 3600,
+      gcGraceSeconds: 86400,
+    });
+    expect(
+      parseServerConfig({
+        ...required,
+        ...skillStorageEnvironment,
+        OPENTAG_SKILL_STORAGE_GC_INTERVAL_SECONDS: "0",
+      }).skillStorage,
+    ).toMatchObject({ gcIntervalSeconds: 0 });
+    expect(() =>
+      parseServerConfig({
+        ...required,
+        ...skillStorageEnvironment,
+        OPENTAG_SKILL_STORAGE_GC_GRACE_SECONDS: "299",
+      }),
+    ).toThrow();
+  });
+
+  it("normalizes the object-key prefix and rejects a traversal at parse time", () => {
+    for (const [raw, expected] of [
+      ["skills/", "skills"],
+      ["/skills", "skills"],
+      ["//skills//", "skills"],
+      ["skills//nested/", "skills/nested"],
+    ] as const) {
+      expect(
+        parseServerConfig({ ...required, ...skillStorageEnvironment, OPENTAG_SKILL_STORAGE_PREFIX: raw }).skillStorage,
+      ).toMatchObject({ prefix: expected });
+    }
+    for (const raw of ["/", "a/../b", "a b"]) {
+      expect(() =>
+        parseServerConfig({ ...required, ...skillStorageEnvironment, OPENTAG_SKILL_STORAGE_PREFIX: raw }),
+      ).toThrow(/OPENTAG_SKILL_STORAGE_PREFIX/);
+    }
   });
 
   it("allows a base path but rejects a partial group and a bad endpoint", () => {

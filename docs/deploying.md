@@ -129,8 +129,10 @@ or not at all; the server refuses to start on a partially configured group.
 | `OPENTAG_SKILL_STORAGE_BUCKET` | Bucket that holds Skill archives; it must stay private |
 | `OPENTAG_SKILL_STORAGE_ACCESS_KEY_ID` | Access key with read and write access to that bucket |
 | `OPENTAG_SKILL_STORAGE_SECRET_ACCESS_KEY` | Secret for that access key; never logged |
-| `OPENTAG_SKILL_STORAGE_PREFIX` | Optional object-key prefix; defaults to `skills` |
+| `OPENTAG_SKILL_STORAGE_PREFIX` | Optional object-key prefix, normalized (empty slash segments dropped); defaults to `skills`; an empty or traversal segment is rejected at startup |
 | `OPENTAG_SKILL_STORAGE_FORCE_PATH_STYLE` | Optional; defaults to `true`, which MinIO and several other services require |
+| `OPENTAG_SKILL_STORAGE_GC_INTERVAL_SECONDS` | Optional collection interval for orphaned Skill objects; defaults to `3600`, and `0` disables collection |
+| `OPENTAG_SKILL_STORAGE_GC_GRACE_SECONDS` | Optional minimum object age before collection; defaults to `86400` with a floor of `300` |
 
 Bundles stream through the server under the caller's own credential — the Account session, a Computer
 machine token, or a Session CLI proof — so the bucket never needs presigned or public URLs and can be
@@ -138,6 +140,14 @@ fully private. Object keys are derived server-side from the Account, Agent, Skil
 a caller never supplies a path. `docker-compose.yml` starts a local MinIO and a one-shot init
 container that creates the `opentag-skills` bucket, and the commented block in `.env.example` points
 the server at it.
+
+Replacing a Skill writes a new object and leaves the previous one in place; a background collector
+sweeps objects that are older than the grace period and are not referenced by any Skill row. The
+collector only ever considers keys directly under this deployment's own normalized prefix, so several
+deployments may share one bucket — including with nested prefixes such as `skills` and
+`skills/staging` — and none will collect another's objects. `skills/` and `/skills` mean the same
+prefix as `skills`: the configured value is normalized once and used identically for writes and for
+collection. The two `GC_` values are only meaningful when the storage group is configured.
 
 ## Official website session indicator
 
