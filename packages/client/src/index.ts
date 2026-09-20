@@ -53,6 +53,20 @@ export {
   type JsonValue,
   type ResumeAgentRuntimeRequest,
 } from "./agent-runtime/types.js";
+export { localArtifactVerifier } from "./anc/artifacts.js";
+export { AncDeferred, type AncEffectAdapter, AncEffectRunner, AncSafeRetry } from "./anc/effect-runner.js";
+export {
+  AncFeishuGateway,
+  type AncFeishuGatewayOptions,
+  type AncFeishuScope,
+  AncFeishuScopeSchema,
+} from "./anc/feishu-gateway.js";
+export { type AncAgentScope, ancAgentView, createAncHostedTools } from "./anc/hosted-tools.js";
+export { AncProjectLoop } from "./anc/project-loop.js";
+export { routeAncHumanReply } from "./anc/routing.js";
+export * from "./anc/schemas.js";
+export { AncSessionDriver, type AncSessionDriverOptions } from "./anc/session-driver.js";
+export { AncFileStore } from "./anc/store.js";
 export { normalizeServerUrl, OpenTagApi, OpenTagApiError } from "./api.js";
 export {
   CREDENTIALS_FILE_NAME,
