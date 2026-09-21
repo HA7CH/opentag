@@ -18,11 +18,15 @@ describe("resolveCloudModelConfig", () => {
     expect(resolveCloudModelConfig({}, true)).toEqual({ enabled: false });
     expect(resolveCloudModelConfig({}, false)).toEqual({ enabled: false });
     // Disabled wins even when a Cloud Runner is unavailable; nothing is provisioned or called.
-    expect(resolveCloudModelConfig({ OPENTAG_CLOUD_MODEL_ENABLED: "false" }, false)).toEqual({ enabled: false });
+    expect(resolveCloudModelConfig({ OPENTAG_CLOUD_MODEL_ENABLED: "false" }, false)).toEqual({
+      enabled: false,
+    });
   });
 
-  it("requires the Cloud Runner and every fixed-upstream setting when enabled", () => {
-    expect(() => resolveCloudModelConfig(enabledEnvironment(), false)).toThrow(/Cloud Runner/);
+  it("stays disabled while the Runner is off and requires every fixed-upstream setting when enabled", () => {
+    // The overall Cloud switch dominates: with the Runner off the model proxy is disabled even
+    // when the secondary switch and every model coordinate are set and valid.
+    expect(resolveCloudModelConfig(enabledEnvironment(), false)).toEqual({ enabled: false });
     expect(() =>
       resolveCloudModelConfig(enabledEnvironment({ OPENTAG_CLOUD_MODEL_UPSTREAM_BASE_URL: "" }), true),
     ).toThrow(/UPSTREAM_BASE_URL/);
@@ -32,6 +36,28 @@ describe("resolveCloudModelConfig", () => {
     expect(() => resolveCloudModelConfig(enabledEnvironment({ OPENTAG_CLOUD_MODEL_ALLOWED_MODELS: "" }), true)).toThrow(
       /ALLOWED_MODELS/,
     );
+  });
+
+  it("validates an opted-in configuration even while the Runner is off", () => {
+    // A staged configuration error surfaces at this startup, not on the later deploy that enables
+    // Cloud; only after validation does the disabled Runner resolve the proxy to disabled.
+    expect(() => resolveCloudModelConfig({ OPENTAG_CLOUD_MODEL_ENABLED: "true" }, false)).toThrow(/UPSTREAM_BASE_URL/);
+    expect(() => resolveCloudModelConfig(enabledEnvironment({ OPENTAG_CLOUD_MODEL_MASTER_KEY: "" }), false)).toThrow(
+      /MASTER_KEY/,
+    );
+    expect(() =>
+      resolveCloudModelConfig(enabledEnvironment({ OPENTAG_CLOUD_MODEL_ALLOWED_MODELS: "model-a,model-a" }), false),
+    ).toThrow(/ALLOWED_MODELS/);
+    expect(() =>
+      resolveCloudModelConfig(
+        enabledEnvironment({ OPENTAG_CLOUD_MODEL_UPSTREAM_BASE_URL: "ftp://models.example.com/v1" }),
+        false,
+      ),
+    ).toThrow();
+    // A complete, valid configuration resolves disabled while the Runner is off, and both
+    // switches off keeps the model group fully optional.
+    expect(resolveCloudModelConfig(enabledEnvironment(), false)).toEqual({ enabled: false });
+    expect(resolveCloudModelConfig({ OPENTAG_CLOUD_MODEL_ENABLED: "false" }, false)).toEqual({ enabled: false });
   });
 
   it("normalizes a fixed HTTPS upstream and keeps the model allowlist ordered", () => {

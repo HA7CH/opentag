@@ -103,8 +103,8 @@ implementation.
 
 E4 delivers a normalized IM message to a Session's existing Cloud allocation over the same
 authenticated Runner control channel. It is additive to E3 protocol version 1 and disabled by
-default: the Server enables the Runner path only with `OPENTAG_CLOUD_RUNNER_ENABLED=true` plus the
-Cloud identity configuration below, and the model path only with `OPENTAG_CLOUD_MODEL_ENABLED=true`
+default: `OPENTAG_CLOUD_IDENTITIES_ENABLED=true` enables identities and the Runner together, with
+the complete configuration below. The model path additionally requires `OPENTAG_CLOUD_MODEL_ENABLED=true`
 and an explicit allowlist. E4 adds no database table or migration; it reuses the existing
 delivery, custody and durable-work records.
 
@@ -239,12 +239,40 @@ Keep the bounded transport defaults unless acceptance shows a need to tune them.
 [`cloud-model-config.ts`](../packages/server/src/cloud-model-config.ts) for the optional timeout,
 body-size, stream-count and token-lifetime settings. This document does not provision any setting.
 
-Cloud identities must already be enabled with `OPENTAG_CLOUD_IDENTITIES_ENABLED=true`,
-`OPENTAG_CLOUD_STORAGE_BASE` and `OPENTAG_CLOUD_RUNNER_VERSION` (the image's CLI version).
+The overall switch is `OPENTAG_CLOUD_IDENTITIES_ENABLED` (default `false`). Enabling it requires
+`OPENTAG_CLOUD_STORAGE_BASE`, `OPENTAG_CLOUD_RUNNER_VERSION` (the image's CLI version), and all eight
+Runner coordinates below (`OPENTAG_CLOUD_RUNNER_IMAGE`, `…_PROJECT`, `…_REGION`,
+`…_SERVICE_ACCOUNT`, `…_BACKEND_ORIGIN`, `…_VPC_NETWORK`, `…_VPC_SUBNET`, `…_EXECUTION_TAG`);
+startup fails when any is missing. Turning it off disables identities, Runner and model together,
+regardless of the model switch. To pause model requests while retaining save/release, disable only
+`OPENTAG_CLOUD_MODEL_ENABLED`. There is no separate Runner or frontend visibility switch.
+
+Upgrading from an identities-only deployment (`OPENTAG_CLOUD_IDENTITIES_ENABLED=true` without
+Runner coordinates, the pre-consolidation posture) now requires the storage prefix, the Runner
+version, and all eight Runner coordinates before the Server will boot: identities-on always means
+Runner-on. Prepare the full coordinate set first, then upgrade the Server.
+
+The retired `OPENTAG_CLOUD_RUNNER_ENABLED` is still read, but only as a transition validation
+input — never as a switch or alias, and never as a runtime pause toggle:
+
+- A malformed nonempty value fails startup; correct or remove it.
+- `OPENTAG_CLOUD_RUNNER_ENABLED=false` combined with `OPENTAG_CLOUD_IDENTITIES_ENABLED=true`
+  fails startup with a migration error. That combination used to mean "identities on, execution
+  paused"; silently applying the new semantics would enable the previously paused Runner. To keep
+  execution off, set `OPENTAG_CLOUD_IDENTITIES_ENABLED=false`; to run Cloud, remove the retired
+  variable.
+- An agreeing `OPENTAG_CLOUD_RUNNER_ENABLED=true` remains tolerated so the deployment can still
+  roll back to an older Server that reads it.
+- With the overall switch off, a leftover valid value has no effect either way; Cloud stays off.
+
+Remove the retired variable from deployment settings once a rollback to a pre-consolidation Server
+is no longer planned; until then retain `=true` only when the rollback target ran with the Runner
+enabled. Rolling back to an old Server whose posture was identities-only (retired flag `false`)
+first requires disabling the overall switch on this Server — the new Server never runs the
+identities-on/flag-`false` combination.
 
 | Server variable | Meaning |
 | --- | --- |
-| `OPENTAG_CLOUD_RUNNER_ENABLED` | `true` to enable; default `false` |
 | `OPENTAG_CLOUD_RUNNER_IMAGE` | Exact registry `name@sha256:…`; tags rejected |
 | `OPENTAG_CLOUD_RUNNER_PROJECT`, `…_REGION` | Dedicated configured project/region |
 | `OPENTAG_CLOUD_RUNNER_SERVICE_ACCOUNT` | Minimal-permission Instance identity |

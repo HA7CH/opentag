@@ -41,6 +41,7 @@ import type { CloudSessionMessageOutcome } from "../sessions/session-collaborati
 import type { AuthorizedSessionMessageRoute, SessionService } from "../sessions/session-service.js";
 import type { CloudModelGrantPort } from "./cloud-delivery-owner.js";
 import { type CloudConnectionRecord, type CloudRuntimeFence, cloudInstanceIdFor } from "./cloud-runtime-fence.js";
+import { CloudCapacityExceededError } from "./errors.js";
 import { loadManagedSandboxBySessionId, loadSandboxRecordBySessionId } from "./owned-sandbox.js";
 import type { RunnerControlSocket, RunnerHub } from "./runner-hub.js";
 import type { IngressAllocationOutcome } from "./sandbox-runner-service.js";
@@ -858,6 +859,11 @@ export class CloudSessionCollaborationOwner {
       // Previously used storage with no persistence: allocating would be a blank replacement.
       return { kind: "unreachable", outcome: { status: "rejected", code: "restore_required" } };
     }
+    if (outcome === "capacity") {
+      // Occupied resources may be releasing. Keep the same durable message retryable after
+      // capacity returns; no child work has taken custody or executed at this point.
+      return { kind: "unreachable", outcome: { status: "unreachable", code: "cloud_capacity_exceeded" } };
+    }
     if (outcome !== "ready") return notReady;
     const converged = await loadManagedSandboxBySessionId(this.#database, targetSessionId);
     if (!converged || !isDispatchReadySandbox(converged.sandbox)) return notReady;
@@ -900,7 +906,7 @@ export class CloudSessionCollaborationOwner {
     allocation: CloudSessionCollaborationAllocationPort,
     accountId: string,
     sandboxId: string,
-  ): Promise<IngressAllocationOutcome | "timeout" | "failed"> {
+  ): Promise<IngressAllocationOutcome | "timeout" | "failed" | "capacity"> {
     const convergence = allocation.ensureEnvironmentAllocated({ accountId, sandboxId });
     // A rejected convergence is transient here: the durable reservation stays retryable.
     void convergence.catch(() => {
@@ -912,7 +918,9 @@ export class CloudSessionCollaborationOwner {
     let timer: ReturnType<typeof setTimeout> | undefined;
     try {
       return await Promise.race([
-        convergence.catch((): IngressAllocationOutcome | "failed" => "failed"),
+        convergence.catch((error): "failed" | "capacity" =>
+          error instanceof CloudCapacityExceededError ? "capacity" : "failed",
+        ),
         new Promise<"timeout">((resolve) => {
           timer = setTimeout(() => resolve("timeout"), this.#ensureTimeoutMs);
           timer.unref?.();
