@@ -454,6 +454,7 @@ describe("CodexAgentRuntime exhaustive behavior", () => {
       params: { threadId: "thread-1", turnId: "turn-1", itemId: "command", delta: "stdout" },
     });
     client.emitItem("item/started", { id: "message-1", type: "agentMessage" });
+    client.emitItem("item/started", { id: "commentary", type: "agentMessage", phase: "commentary" });
     client.emitItem("item/completed", { id: "message-1", type: "agentMessage", text: "fallback" });
     client.emitItem("item/completed", {
       id: "commentary",
@@ -481,6 +482,7 @@ describe("CodexAgentRuntime exhaustive behavior", () => {
     client.complete({
       items: [
         { id: "bad", type: "other", text: "ignored" },
+        { type: "agentMessage", text: "missing identity" },
         { id: "terminal", type: "agentMessage", phase: "final_answer", text: "terminal answer" },
       ],
     });
@@ -502,6 +504,18 @@ describe("CodexAgentRuntime exhaustive behavior", () => {
         "tool_updated",
         "tool_completed",
         "provider_event",
+      ]),
+    );
+    expect(events).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ type: "message_started", messageId: "commentary", phase: "commentary" }),
+        expect.objectContaining({ type: "message_completed", messageId: "commentary", phase: "commentary" }),
+        expect.objectContaining({
+          type: "message_completed",
+          messageId: "terminal",
+          phase: "final_answer",
+          text: "terminal answer",
+        }),
       ]),
     );
     expect(events.filter((event) => event.type === "tool_completed").map((event) => event.status)).toEqual(
@@ -526,6 +540,9 @@ describe("CodexAgentRuntime exhaustive behavior", () => {
     client.emit({ method: "thread/tokenUsage/updated", params: { tokenUsage: { inputTokens: 1, outputTokens: -1 } } });
     client.complete({ items: [] });
     await expect(fallback).resolves.toMatchObject({ output: [{ text: "fallback answer" }], usage: { inputTokens: 1 } });
+    expect(
+      events.find((event) => event.type === "message_completed" && event.messageId === "answer"),
+    ).not.toHaveProperty("phase");
 
     const interrupted = runtime.prompt({ runId: "interrupted", input: input("two") });
     await vi.waitFor(() => expect(client.calls.filter((call) => call.method === "turn/start")).toHaveLength(2));
@@ -569,6 +586,17 @@ describe("CodexAgentRuntime exhaustive behavior", () => {
       items: [{ id: "open", type: "agentMessage", phase: "final_answer", text: "terminal text" }],
     });
     await expect(openMessage).resolves.toMatchObject({ status: "completed", output: [{ text: "terminal text" }] });
+    expect(events).toContainEqual({
+      type: "message_completed",
+      runId: "open-message",
+      messageId: "open",
+      text: "terminal text",
+      phase: "final_answer",
+    });
+
+    expect(events.filter((event) => event.type === "message_completed" && event.runId === "open-message")).toHaveLength(
+      1,
+    );
 
     const openDelta = runtime.prompt({ runId: "open-delta", input: input("six") });
     await vi.waitFor(() => expect(client.calls.filter((call) => call.method === "turn/start")).toHaveLength(6));

@@ -3,6 +3,30 @@ import { AgentRunEventValidator } from "../agent-runtime/event-validator.js";
 import { AGENT_RUNTIME_TEXT_MAX_BYTES, type AgentProviderRunEvent } from "../agent-runtime/types.js";
 
 describe("AgentRunEventValidator", () => {
+  it.each(["commentary", "final_answer"] as const)(
+    "preserves the public %s phase without implying run completion",
+    (phase) => {
+      const validator = new AgentRunEventValidator();
+      validator.accept({ type: "message_started", messageId: "one", phase });
+      validator.accept({ type: "message_completed", messageId: "one", text: "public text", phase });
+      validator.accept({ type: "message_started", messageId: "two" });
+      validator.accept({ type: "message_completed", messageId: "two", text: "legacy" });
+      expect(() => validator.assertSettled({ status: "completed" })).not.toThrow();
+    },
+  );
+
+  it("rejects invalid phases before consuming a message lifecycle", () => {
+    const validator = new AgentRunEventValidator();
+    expect(() =>
+      validator.accept({ type: "message_started", messageId: "one", phase: "reasoning" as never }),
+    ).toThrow();
+    validator.accept({ type: "message_started", messageId: "one" });
+    expect(() =>
+      validator.accept({ type: "message_completed", messageId: "one", text: "x", phase: "reasoning" as never }),
+    ).toThrow();
+    validator.accept({ type: "message_completed", messageId: "one", text: "x", phase: "final_answer" });
+    expect(() => validator.assertSettled({ status: "completed" })).not.toThrow();
+  });
   it("accepts the complete provider-neutral grammar with optional model turns and parallel tools", () => {
     const validator = new AgentRunEventValidator();
     for (const event of [
