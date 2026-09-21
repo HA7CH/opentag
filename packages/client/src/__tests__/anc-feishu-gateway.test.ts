@@ -186,6 +186,16 @@ async function receipt(directory: string) {
 }
 
 describe("ANC Feishu card delivery and revision safety", () => {
+  it("validates uploaded keys, prevents kind reuse, and never treats a file as an updatable card", async () => {
+    const f = await fixture();
+    await expect(f.gateway.sendUploadedFile("file", target, "../key")).rejects.toThrow();
+    expect(f.fetcher).not.toHaveBeenCalled();
+    expect(await f.gateway.sendUploadedFile("file", target, "file_fixture")).toBe("om_sent");
+    await expect(f.gateway.sendText("file", target, "Text")).rejects.toThrow("reused");
+    await expect(f.gateway.updateCard("file", 1, card())).rejects.toThrow("receipted");
+    expect(f.fetcher).toHaveBeenCalledTimes(1);
+  });
+
   it("sends a Card 2.0 payload directly into the chat and reuses its durable receipt", async () => {
     const f = await fixture();
     expect(await f.gateway.sendCard("card", target, card())).toBe("om_sent");

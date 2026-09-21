@@ -19,7 +19,7 @@ export const AncFeishuReceiptSchema = z.object({
   attempts: z.number().int().nonnegative(),
   messageId: ExternalId.optional(),
   chatId: ExternalId.optional(),
-  msgType: z.enum(["text", "interactive"]).optional(),
+  msgType: z.enum(["text", "interactive", "file"]).optional(),
   cardDigest: z.string().optional(),
   target: z.object({ type: z.enum(["chat_id", "open_id"]), id: ExternalId }).optional(),
   update: Update.optional(),

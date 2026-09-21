@@ -73,6 +73,11 @@ export class AncFeishuGateway {
     this.#fetch = options.fetch ?? fetch;
   }
 
+  /** Startup-only cleanup: never remove a live writer's lock or replay a send. */
+  async recoverDeadLocks(): Promise<number> {
+    return this.#locks.recoverDeadLocks();
+  }
+
   private async headers(): Promise<Record<string, string>> {
     const grant = await this.options.credential();
     if (grant.appId !== this.#scope.appId || grant.brand !== this.#scope.brand || !grant.token)
@@ -165,6 +170,25 @@ export class AncFeishuGateway {
     );
   }
 
+  /** A trusted uploader supplies this key only after verifying the artifact bytes. */
+  async sendUploadedFile(
+    deliveryId: string,
+    input: AncFeishuTarget,
+    fileKey: string,
+    signal?: AbortSignal,
+  ): Promise<string> {
+    const target = this.allowedTarget(input);
+    ExternalId.parse(deliveryId);
+    z.string()
+      .regex(/^file_[A-Za-z0-9_-]{1,240}$/)
+      .parse(fileKey);
+    await ensurePrivateDirectory(this.options.directory, this.options.directory);
+    await this.#locks.initialize();
+    return this.#locks.lock(sha(deliveryId), () =>
+      this.sendLocked(deliveryId, target, { type: "file", content: JSON.stringify({ file_key: fileKey }) }, signal),
+    );
+  }
+
   async updateCard(deliveryId: string, revision: number, card: JsonValue, signal?: AbortSignal): Promise<string> {
     ExternalId.parse(deliveryId);
     await this.#locks.initialize();
@@ -229,14 +253,16 @@ export class AncFeishuGateway {
   private async sendLocked(
     id: string,
     target: AncFeishuTarget,
-    message: { type: "text" | "interactive"; content: string },
+    message: { type: "text" | "interactive" | "file"; content: string },
     signal?: AbortSignal,
   ): Promise<string> {
     const path = this.ledgerPath(id);
     const digest =
       message.type === "text"
         ? sha({ scope: this.#scope.appId, target, text: message.content })
-        : sha({ scope: this.#scope.appId, target, card: JSON.parse(message.content) });
+        : message.type === "interactive"
+          ? sha({ scope: this.#scope.appId, target, card: JSON.parse(message.content) })
+          : sha({ scope: this.#scope.appId, target, file: JSON.parse(message.content) });
     const previous = await readDurableJson(path, (value) => Ledger.parse(value));
     if (previous && previous.digest !== digest) throw new Error("Delivery ID reused with different content");
     if (previous?.status === "sent" && previous.messageId) return previous.messageId;

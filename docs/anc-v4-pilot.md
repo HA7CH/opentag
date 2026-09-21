@@ -49,10 +49,19 @@ deployment configuration stay in access-controlled runtime storage.
   conditional prose, mismatched anchors and stale cards cannot authorize a different action or version.
   Replayed messages reuse the original durable command, including its verified human identity.
 
+- An explicit, default-off input handoff runs before the legacy model, CLI and credential projection.
+  An accepted or uncertain handoff never falls back to a second reply path. The transport completion
+  acknowledges durable input custody only; it does not assert project completion or provider delivery.
+- Exact-byte attachment upload and file-message receipts are separate. Retained review artifacts
+  are verified again, destinations are allowlisted, uploads are bounded below the provider limit,
+  and uncertain upload/send outcomes cannot silently create duplicate delivery.
+
 These components are not yet connected to the live pilot ingress. Do not enable a second listener or
 let the ordinary CLI reply path and the ANC publisher both own the same input. Human-request cards,
-project-group creation, attachment delivery and callback integration remain separate release gates.
-- Metadata-only private inventory tooling; imported material is not automatically promoted to authority.
+project-group creation and callback integration remain separate release gates. Attachment transport tests
+are not a substitute for a file opening successfully in the intended real chat.
+
+Metadata-only private inventory tooling does not automatically promote imported material to authority.
 
 ## Reproducible checks
 
