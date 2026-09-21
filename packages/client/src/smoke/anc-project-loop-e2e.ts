@@ -2,8 +2,9 @@ import { mkdtemp } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import type { AgentRuntimeFactory } from "../agent-runtime/types.js";
-import { localArtifactVerifier } from "../anc/artifacts.js";
+import { localArtifactRetainer, localArtifactVerifier } from "../anc/artifacts.js";
 import { AncEffectRunner } from "../anc/effect-runner.js";
+import { AncPilotWorker } from "../anc/pilot-worker.js";
 import { AncProjectLoop } from "../anc/project-loop.js";
 import type { AncEffect, AncHumanRequest, AncSnapshot } from "../anc/schemas.js";
 import { AncSessionDriver } from "../anc/session-driver.js";
@@ -19,6 +20,7 @@ const directory = await mkdtemp(join(root, "loop-"));
 const projectId = "native-loop-test";
 const loop = new AncProjectLoop(new AncFileStore(join(directory, "state")), {
   verifyArtifact: localArtifactVerifier(directory),
+  retainArtifact: localArtifactRetainer(directory, join(directory, "artifacts")),
 });
 const abort = new AbortController();
 const timer = setTimeout(() => abort.abort("smoke_deadline"), 20 * 60 * 1000);
@@ -56,6 +58,7 @@ const runner = new AncEffectRunner(loop, {
     effect.kind.startsWith("session.") ? driver.lookup(effect, snapshot) : simulatedReceipts.get(effect.id),
 });
 const simulatedHuman = { kind: "human" as const, id: "simulated-reviewer", projectIds: [projectId] };
+let proposalChanged = false;
 let posterChanged = false;
 let coursewareDeliveredWhilePosterWaited = false;
 const humanEvents: { requestId: string; decision: string; taskId?: string }[] = [];
@@ -74,58 +77,76 @@ async function respond(request: AncHumanRequest, decision: "approve" | "changes"
   humanEvents.push({ requestId: request.id, decision, taskId: request.taskId });
 }
 
-async function serviceRequests(snapshot: AncSnapshot): Promise<void> {
-  for (const request of Object.values(snapshot.project.requests)) {
-    if (request.status !== "pending" || !request.receipt) continue;
-    if (request.taskId === "poster" && request.purpose === "task_review" && !posterChanged) {
-      if (snapshot.project.tasks.courseware?.status !== "delivered") continue;
-      coursewareDeliveredWhilePosterWaited = true;
-      posterChanged = true;
-      await respond(
-        request,
-        "changes",
-        "Change the visible poster title to Beijing Camp - Reviewed Test. Keep date and location explicitly unconfirmed. Produce a new artifact revision, validate the file and report it again.",
-      );
-    } else if (request.kind === "information" || request.kind === "action") {
-      await respond(
-        request,
-        "answer",
-        "This is an isolated fixture. Date and venue remain unconfirmed placeholders; perform no real-world action. Complete the local test artifacts only.",
-      );
-    } else {
-      await respond(
-        request,
-        "approve",
-        "I am the simulated reviewer for this isolated test. Approve only the displayed test version/action; no real publication or commitment.",
-      );
-    }
+async function serviceRequest(snapshot: AncSnapshot, request: AncHumanRequest): Promise<void> {
+  if (request.purpose === "start" && !proposalChanged) {
+    proposalChanged = true;
+    await respond(
+      request,
+      "changes",
+      "Keep the same two test tasks and exact task IDs poster and courseware. Revise the proposal to explicitly say all human approval and external delivery in this fixture are simulated. Do not remove the task instructions or add any real publication. Use anc_project_revise_proposal and wait for approval of that new scope.",
+    );
+  } else if (request.taskId === "poster" && request.purpose === "task_review" && !posterChanged) {
+    if (snapshot.project.tasks.courseware?.status !== "delivered") return;
+    coursewareDeliveredWhilePosterWaited = true;
+    posterChanged = true;
+    await respond(
+      request,
+      "changes",
+      "Change the visible poster title to Beijing Camp - Reviewed Test. Keep date and location explicitly unconfirmed. Produce a new artifact revision, validate the file and report it again.",
+    );
+  } else if (request.kind === "information" || request.kind === "action") {
+    await respond(
+      request,
+      "answer",
+      "This is an isolated fixture. Date and venue remain unconfirmed placeholders; perform no real-world action. Complete the local test artifacts only.",
+    );
+  } else {
+    await respond(
+      request,
+      "approve",
+      "I am the simulated reviewer for this isolated test. Approve only the displayed test version/action; no real publication or commitment.",
+    );
   }
 }
 
-await loop.execute(
-  { kind: "system", id: "isolated-test", projectIds: [projectId] },
-  {
-    operation: "project.propose",
-    projectId,
-    eventId: "proposal",
-    title: "Beijing Camp protocol test - not a real event",
-    brief:
-      "Isolated orchestration test. As project owner, dispatch exactly two independent tasks with IDs poster and courseware. poster: create a simple but valid local SVG poster containing Beijing Camp - Test, and explicitly unconfirmed date and venue; validate SVG and calculate SHA256. courseware: create a local Markdown teaching outline with 3 short sections and a clearly marked test disclaimer; validate and calculate SHA256. No external publication, APIs, downloads, or real people. Workers should write files in their own workspaces then call anc_task_report_result with a file URL, real SHA256, validation evidence, a unique artifact revision and dueAt one day ahead. When human feedback arrives, revise the existing task rather than create a new task. After both artifacts are approved and delivered, propose project closure. Do not wait for another user prompt to continue.",
-    dri: "simulated-reviewer",
-    participants: ["simulated-reviewer"],
-    dueAt: Date.now() + 86400000,
+async function serviceRequests(snapshot: AncSnapshot): Promise<void> {
+  for (const request of Object.values(snapshot.project.requests)) {
+    if (request.status === "pending" && request.receipt) await serviceRequest(snapshot, request);
+  }
+}
+
+const ownerSessionId = await driver.admitIntake({
+  projectId,
+  eventId: "fixture-intake",
+  actorId: "simulated-reviewer",
+  humanIds: ["simulated-reviewer"],
+  source: { appId: "fixture-app", chatId: "fixture-chat", messageId: "fixture-message" },
+  text: `Isolated orchestration test, not a real event. Prepare a project proposal now, dueAt ${Date.now() + 86400000}, with title Beijing Camp protocol test. After simulated startup approval, as project owner dispatch exactly two independent tasks with IDs poster and courseware. poster: create a simple but valid local SVG poster containing Beijing Camp - Test, with explicitly unconfirmed date and venue; validate SVG and calculate SHA256. courseware: create a local Markdown teaching outline with 3 short sections and a clearly marked test disclaimer; validate and calculate SHA256. No external publication, APIs, downloads, or real people. Workers should write files in their own workspaces then call anc_task_report_result with a file URL, real SHA256, validation evidence, a unique artifact revision and dueAt one day ahead. Preserve these instructions in the proposal brief. When human feedback arrives, revise the existing task rather than create a new task. After both artifacts are approved and delivered, propose project closure. Do not wait for another user prompt to continue.`,
+});
+const blockedIntakes: string[] = [];
+const worker = new AncPilotWorker(loop, driver, runner, {
+  onIntakeBlocked: async (sessionId) => {
+    blockedIntakes.push(sessionId);
+    abort.abort("intake_blocked");
   },
-);
+});
+
 let serviceFailure: unknown;
-const service = runner.serve(abort.signal).catch((error: unknown) => {
+const service = worker.serve(abort.signal).catch((error: unknown) => {
   serviceFailure = error;
   abort.abort("effect_worker_failed");
 });
 let complete = false;
+let originalOwnerPreserved = false;
 try {
   while (!abort.signal.aborted) {
     const snapshot = await loop.store.read(projectId);
-    if (!snapshot) throw new Error("Missing native test project");
+    if (!snapshot) {
+      await delay(100, undefined, { signal: abort.signal }).catch((error: unknown) => {
+        if (!abort.signal.aborted) throw error;
+      });
+      continue;
+    }
     await serviceRequests(snapshot);
     const archived = Object.values(snapshot.effects).some(
       (effect) => effect.kind === "project.archive" && effect.status === "succeeded",
@@ -143,10 +164,15 @@ try {
   clearTimeout(timer);
   await service;
   const snapshot = await loop.store.read(projectId);
+  originalOwnerPreserved = snapshot?.project.sessionId === ownerSessionId;
   await writeDurableJson(join(directory, "evidence.json"), {
     scope: "real Codex project/worker executions; simulated human identities and Feishu receipts",
     feishuTested: false,
     complete,
+    proposalChanged,
+    ownerSessionId,
+    originalOwnerPreserved,
+    blockedIntakes,
     posterChanged,
     coursewareDeliveredWhilePosterWaited,
     serviceFailed: Boolean(serviceFailure),
@@ -159,5 +185,13 @@ try {
     JSON.stringify({ directory, complete, posterChanged, coursewareDeliveredWhilePosterWaited, feishuTested: false }),
   );
 }
-if (!complete || !posterChanged || !coursewareDeliveredWhilePosterWaited || serviceFailure)
+if (
+  !complete ||
+  !originalOwnerPreserved ||
+  !proposalChanged ||
+  !posterChanged ||
+  !coursewareDeliveredWhilePosterWaited ||
+  blockedIntakes.length ||
+  serviceFailure
+)
   throw new Error("Native orchestration smoke did not satisfy all acceptance checks; inspect retained evidence");

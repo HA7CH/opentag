@@ -39,6 +39,10 @@ export interface AncEffectAdapter {
   lookup(effect: AncEffect, snapshot: AncSnapshot): Promise<string | undefined>;
 }
 export class AncEffectRunner {
+  #activeCount = 0;
+  get activeCount(): number {
+    return this.#activeCount;
+  }
   constructor(
     readonly loop: AncProjectLoop,
     readonly adapter: AncEffectAdapter,
@@ -82,17 +86,16 @@ export class AncEffectRunner {
    * delivery/reconciliation actions have separate lanes, so waiting on a model
    * never delays a human request that is already durable.
    */
-  async serve(signal: AbortSignal): Promise<void> {
+  async serve(signal: AbortSignal, enabled: () => boolean = () => true): Promise<void> {
     await this.loop.store.initialize();
     await this.loop.store.lock("effect-worker", async () => {
       const active = new Map<string, { execution: boolean; promise: Promise<void> }>();
       let failure: { error: unknown } | undefined;
       try {
         while (!signal.aborted && !failure) {
-          const executions = [...active.values()].filter((job) => job.execution).length;
-          const work = await this.selectWork(2 - executions, 2 - (active.size - executions), new Set(active.keys()));
+          const work = await this.servingWork(active, enabled);
           for (const item of work) {
-            if (signal.aborted) break;
+            if (!this.accepting(signal, enabled)) break;
             const key = `${item.id}:${item.effect.id}`;
             const promise = this.run(item.id, item.effect, item.snapshot)
               .catch((error: unknown) => {
@@ -110,6 +113,19 @@ export class AncEffectRunner {
       }
       if (failure) throw failure.error;
     });
+  }
+
+  private accepting(signal: AbortSignal, enabled: () => boolean): boolean {
+    return !signal.aborted && enabled();
+  }
+
+  private async servingWork(
+    active: Map<string, { execution: boolean; promise: Promise<void> }>,
+    enabled: () => boolean,
+  ): Promise<EffectWork[]> {
+    if (!enabled()) return [];
+    const executions = [...active.values()].filter((job) => job.execution).length;
+    return this.selectWork(2 - executions, 2 - (active.size - executions), new Set(active.keys()));
   }
 
   private isExecution(effect: AncEffect): boolean {
@@ -152,6 +168,15 @@ export class AncEffectRunner {
   }
 
   private async run(id: string, candidate: AncEffect, previous: AncSnapshot): Promise<void> {
+    this.#activeCount++;
+    try {
+      await this.execute(id, candidate, previous);
+    } finally {
+      this.#activeCount--;
+    }
+  }
+
+  private async execute(id: string, candidate: AncEffect, previous: AncSnapshot): Promise<void> {
     if (candidate.status === "unknown") {
       try {
         const receipt = await this.adapter.lookup(candidate, previous);

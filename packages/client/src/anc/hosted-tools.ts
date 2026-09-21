@@ -10,6 +10,8 @@ export interface AncAgentScope {
   readonly sessionId: string;
   /** Absent only for the project owner. Set by the runtime, never by the model. */
   readonly taskId?: string;
+  /** Admission fixes the permitted people before the model proposes a project. */
+  readonly humanIds?: readonly string[];
 }
 
 function permitted(operation: string, scope: AncAgentScope): boolean {
@@ -22,6 +24,14 @@ function scopedInput(call: AgentHostedToolCall, scope: AncAgentScope): Record<st
   if (!call.input || typeof call.input !== "object" || Array.isArray(call.input))
     throw new Error("Expected command object");
   if (scope.taskId && call.input.taskId !== scope.taskId) throw new Error("Task scope mismatch");
+  if (call.name === "anc_project_propose" && scope.humanIds) {
+    const people = call.input.participants;
+    if (
+      !Array.isArray(people) ||
+      people.some((person) => typeof person !== "string" || !scope.humanIds?.includes(person))
+    )
+      throw new Error("Project participants are outside the admitted scope");
+  }
   return call.input;
 }
 
@@ -44,6 +54,12 @@ export function ancAgentView(snapshot: AncSnapshot, scope: AncAgentScope): unkno
 
 /** No approval tool is exposed. Human identity must enter through a verified IM transport. */
 export function createAncHostedTools(loop: AncProjectLoop, scope: AncAgentScope): AgentHostedTools {
+  const caller = {
+    kind: "agent" as const,
+    id: scope.sessionId,
+    projectIds: [scope.projectId],
+    ownerSessionId: scope.taskId ? undefined : scope.sessionId,
+  };
   const operations = new Map(
     AncCommandSchema.options
       .filter((schema) => permitted(schema.shape.operation.value, scope))
@@ -85,15 +101,12 @@ export function createAncHostedTools(loop: AncProjectLoop, scope: AncAgentScope)
         const eventId = createHash("sha256")
           .update(JSON.stringify([scope.sessionId, call.runId, call.toolCallId]))
           .digest("hex");
-        const snapshot = await loop.execute(
-          { kind: "agent", id: scope.sessionId, projectIds: [scope.projectId] },
-          {
-            ...input,
-            projectId: scope.projectId,
-            eventId,
-            operation: schema.shape.operation.value,
-          },
-        );
+        const snapshot = await loop.execute(caller, {
+          ...input,
+          projectId: scope.projectId,
+          eventId,
+          operation: schema.shape.operation.value,
+        });
         return { success: true, content: [{ type: "text", text: JSON.stringify(ancAgentView(snapshot, scope)) }] };
       } catch (error) {
         // Validation messages contain no file contents or transport credentials.

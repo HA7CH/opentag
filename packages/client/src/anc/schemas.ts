@@ -163,4 +163,6 @@ export interface AncCaller {
   readonly kind: "agent" | "human" | "system";
   readonly id: string;
   readonly projectIds: readonly string[];
+  /** Trusted owner identity; never read from command arguments. */
+  readonly ownerSessionId?: string;
 }

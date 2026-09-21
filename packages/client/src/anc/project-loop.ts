@@ -6,6 +6,7 @@ import {
   AncCommandSchema,
   type AncEffect,
   type AncHumanRequest,
+  AncId,
   type AncProject,
   type AncSnapshot,
   type AncTask,
@@ -281,7 +282,17 @@ export class AncProjectLoop {
       requireCondition(caller.kind === "system", "Only the scheduler may check deadlines");
     else
       requireCondition(caller.kind === "agent" || caller.kind === "system", "Use the project agent for this operation");
-    const hash = digest({ caller: { kind: caller.kind, id: caller.id }, command });
+    if (caller.ownerSessionId !== undefined) {
+      AncId.parse(caller.ownerSessionId);
+      requireCondition(
+        caller.kind === "agent" && caller.id === caller.ownerSessionId,
+        "Invalid owner session identity",
+      );
+    }
+    const hash = digest({
+      caller: { kind: caller.kind, id: caller.id, ownerSessionId: caller.ownerSessionId },
+      command,
+    });
     return this.store.transact(command.projectId, async (previous) => {
       const duplicate = previous?.events.find((event) => event.id === command.eventId);
       if (duplicate) {
@@ -289,7 +300,7 @@ export class AncProjectLoop {
         requireCondition(previous, "Missing duplicate state");
         return { snapshot: previous, result: previous };
       }
-      const snapshot = previous ? structuredClone(previous) : this.create(command);
+      const snapshot = previous ? structuredClone(previous) : this.create(command, caller);
       await this.prepareArtifact(snapshot, caller, command);
       this.apply(snapshot, caller, command);
       snapshot.events.push({ id: command.eventId, digest: hash, at: this.#now(), operation: command.operation });
@@ -324,7 +335,7 @@ export class AncProjectLoop {
     await this.options.verifyArtifact(artifact);
   }
 
-  private create(c: AncCommand): AncSnapshot {
+  private create(c: AncCommand, caller: AncCaller): AncSnapshot {
     requireCondition(c.operation === "project.propose", "Unknown project");
     requireCondition(c.participants.includes(c.dri), "DRI must be a participant");
     requireCondition(
@@ -341,6 +352,7 @@ export class AncProjectLoop {
         participants: [...new Set(c.participants)],
         roles: { ...c.roles, owner: c.dri },
         status: "proposed",
+        sessionId: caller.ownerSessionId,
         revision: 1,
         tasks: {},
         requests: {},
@@ -351,6 +363,8 @@ export class AncProjectLoop {
   }
 
   private apply(s: AncSnapshot, caller: AncCaller, c: AncCommand): void {
+    // Closure can race an already selected deadline scan; it must not stop the worker.
+    if (s.project.status === "closed" && c.operation === "deadline.check") return;
     requireCondition(s.project.status !== "closed", "Project is closed");
     switch (c.operation) {
       case "project.propose":
@@ -508,7 +522,8 @@ export class AncProjectLoop {
     const p = s.project;
     if (e.kind === "group.create") {
       p.groupId = receipt;
-      effect(s, p.id, "session.create");
+      if (p.sessionId) wake(s, e.id);
+      else effect(s, p.id, "session.create");
     } else if (e.kind === "session.create") {
       if (e.taskId) {
         const t = task(s, e.taskId);
