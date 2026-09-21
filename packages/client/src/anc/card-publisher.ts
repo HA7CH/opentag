@@ -206,7 +206,12 @@ export class AncCardPublisher {
     await this.#store.initialize();
     return this.#store.lock("card-publisher", async () => {
       const work = await this.select();
-      await Promise.all(work.map((item) => this.perform(item)));
+      // Preserve provider message order within a run; independent runs may send concurrently.
+      await Promise.all(
+        [...new Set(work.map((item) => item.key))].map(async (key) => {
+          for (const item of work.filter((candidate) => candidate.key === key)) await this.perform(item);
+        }),
+      );
       return work.length;
     });
   }
