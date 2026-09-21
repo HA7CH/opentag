@@ -20,12 +20,13 @@ jobs:
   staging:
     name: Publish CLI Staging
     if: >-
-      (github.event_name == 'workflow_run' &&
+      github.repository == 'first-tree-ai/opentag' &&
+      ((github.event_name == 'workflow_run' &&
        github.event.workflow_run.conclusion == 'success' &&
        github.event.workflow_run.event == 'push' &&
        github.event.workflow_run.head_repository.full_name == github.repository &&
        github.event.workflow_run.head_branch == 'main') ||
-      (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main')
+       (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'))
     runs-on: ubuntu-latest
     # `queue: max` keeps up to 100 pending runs in FIFO order. The default `single` cancels whatever
     # was already pending, so a third run would silently drop the second release entirely.
@@ -202,7 +203,7 @@ jobs:
 
   production:
     name: Publish CLI Production
-    if: github.event_name == 'push' && github.ref_type == 'tag'
+    if: github.repository == 'first-tree-ai/opentag' && github.event_name == 'push' && github.ref_type == 'tag'
     runs-on: ubuntu-latest
     # Production releases publish mutable channel heads, so they are serialized. `queue: max` keeps up
     # to 100 pending runs in FIFO order; the default `single` would cancel whatever was already
