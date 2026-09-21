@@ -28,6 +28,8 @@ deployment configuration stay in access-controlled runtime storage.
 - Version-bound human requests, recipient validation, one reminder and explicit blocking.
 - Stable outbox IDs, bounded retries for known no-side-effect failures and unknown-result reconciliation.
 - Separate owner/worker sessions, scoped hosted tools and stored provider bindings.
+- Durable goal intake creates and retains the original owner session through proposal revision and approval.
+  A single background worker drives ready intake, effects and due reminders without polling the model while idle.
 - Independent bounded execution and delivery lanes; capacity waits do not consume failure retries.
 - An unresolved prior run prevents new work until its effects are reconciled.
 - Failed and uncertain side effects remain visible to the owner; bounded recovery cannot recursively spawn recovery work.
@@ -40,21 +42,30 @@ deployment configuration stay in access-controlled runtime storage.
 - Public assistant message phases survive the Codex bridge, including terminal-snapshot-only messages.
 - A bounded Card 2.0 projection separates actual answers and keeps commentary as progress.
   Steering alone does not create a card. Tool logs, raw reasoning and user input are excluded.
-  A live card publisher is not yet connected.
+- A durable, coalescing card publisher separates model output from network I/O. Public snapshots checkpoint at
+  a bounded cadence and at terminal events; immutable pending writes survive newer output and process restarts.
+  Namespace/project/run isolation, consecutive revisions and bounded reconciliation prevent duplicate sends.
+- Verified plain-text feedback requires a quoted request or explicit confirmation reference. Acknowledgements,
+  conditional prose, mismatched anchors and stale cards cannot authorize a different action or version.
+  Replayed messages reuse the original durable command, including its verified human identity.
+
+These components are not yet connected to the live pilot ingress. Do not enable a second listener or
+let the ordinary CLI reply path and the ANC publisher both own the same input. Human-request cards,
+project-group creation, attachment delivery and callback integration remain separate release gates.
 - Metadata-only private inventory tooling; imported material is not automatically promoted to authority.
 
 ## Reproducible checks
 
 Run the repository commands in AGENTS.md with its pinned toolchain.
 
-The current foundation passed formatting/lint contracts, serial workspace build,
-bundle reporting and all workspace type checks. Tests passed: 335 root script
-tests and 3,726 workspace unit tests (228 shared, 950 server, 1,203 client,
-911 web and 434 CLI).
+Record the exact source tree for formatting/lint contracts, serial workspace build,
+bundle reporting, all workspace type checks, root script tests and workspace tests.
+The local test fixtures require loopback socket access; a sandbox-denied listener
+is not a product failure or a passing test.
 
-The Agent Runtime coverage gate reports 100% for its configured scope:
-4,068 statements, 2,898 branches, 703 functions and 3,618 lines.
-This is not a claim of repository-wide or ANC-module-wide coverage.
+The Agent Runtime coverage gate requires 100% for its configured scope.
+This is not repository-wide or ANC-module-wide coverage. Keep failed and retried
+run records alongside the eventual result; do not report a partial run as a pass.
 
 Mocked transport tests and opt-in model smoke tests are different evidence levels.
 The smoke fixtures explicitly simulate human approvals and external delivery.

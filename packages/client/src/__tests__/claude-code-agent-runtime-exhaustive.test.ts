@@ -687,11 +687,16 @@ describe("ClaudeCodeAgentRuntime exhaustive behavior", () => {
     const authProbe = new ClaudeCodeAgentRuntimeFactory({
       process: { command: hangingAuthCommand, env: { PATH: process.env.PATH } },
     }).probe({ signal: authAbort.signal });
-    await vi.waitFor(async () => expect(await readFile(authStarted, "utf8")).toBe("started"));
-    authAbort.abort(new Error("stop"));
-    await expect(authProbe).rejects.toBeDefined();
+    try {
+      await vi.waitFor(async () => expect(await readFile(authStarted, "utf8")).toBe("started"), { timeout: 5000 });
+    } finally {
+      // Always reap the controlled hanging fixture, including on a failed readiness assertion.
+      authAbort.abort(new Error("stop"));
+      await expect(authProbe).rejects.toBeDefined();
+    }
     expect(claudeCodeAgentRuntimeEnvironment()).toEqual(expect.any(Object));
-  });
+    // This case starts many real subprocesses; individual probe budgets remain unchanged.
+  }, 30_000);
 
   it("keeps the package boundary free of Claude SDK, CLI, and bundled binary dependencies", async () => {
     for (const url of [
