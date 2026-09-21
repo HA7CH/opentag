@@ -53,6 +53,7 @@ export class AgentRunEventValidator {
         this.#complete(event.modelTurnId, "modelTurnId", this.#activeModelTurns);
         return;
       case "message_started":
+        assertMessagePhase(event.phase);
         this.#start(event.messageId, "messageId", this.#seenMessages, this.#activeMessages);
         return;
       case "message_delta":
@@ -60,6 +61,7 @@ export class AgentRunEventValidator {
         assertText(event.delta, "message delta");
         return;
       case "message_completed":
+        assertMessagePhase(event.phase);
         this.#complete(event.messageId, "messageId", this.#activeMessages);
         assertText(event.text, "message text");
         return;
@@ -147,4 +149,10 @@ function assertUsage(usage: AgentUsage): void {
 
 function protocolError(message: string): AgentProviderError {
   return new AgentProviderError("provider_protocol_error", message);
+}
+
+function assertMessagePhase(phase: unknown): void {
+  if (phase !== undefined && phase !== "commentary" && phase !== "final_answer") {
+    throw protocolError("provider emitted an invalid public message phase");
+  }
 }

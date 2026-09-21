@@ -241,6 +241,8 @@ function resolveSharedProviderRefreshResult(
 }
 
 export interface CreateClientRuntimeOptions {
+  /** Explicit opt-in handoff; omitted for all existing deployments. */
+  readonly exclusiveTurns?: import("./agent-turn-runner.js").ExclusiveImTurnHandler;
   readonly api?: Pick<OpenTagApi, "openImResource">;
   readonly serverDurability?: {
     readonly api: Pick<OpenTagApi, "listRuntimeDurableWork" | "writeRuntimeDurableWork">;
@@ -676,6 +678,7 @@ export async function createClientRuntime(
     steer: (request) => runner.steer(request),
   });
   runner = new AgentTurnRunner({
+    exclusiveTurns: options.exclusiveTurns,
     feishuTurnReactions: process.env.OPENTAG_FEISHU_TURN_REACTIONS === "1",
     bindingStore,
     connection,

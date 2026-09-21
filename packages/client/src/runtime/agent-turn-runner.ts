@@ -52,7 +52,19 @@ export interface AgentTurnOutgoingReplyCollector {
   cleanup(input: { readonly sessionId: string; readonly runId: string }): Promise<void>;
 }
 
+/**
+ * Optional transport handoff, selected from trusted configuration before any CLI
+ * credentials or model are opened. Once owned, errors MUST NOT fall back to the
+ * ordinary path. Returning only acknowledges durable input custody, not a
+ * finished project or a delivered provider message.
+ */
+export interface ExclusiveImTurnHandler {
+  owns(request: DirectImMessageDeliveryRequest): boolean;
+  accept(request: DirectImMessageDeliveryRequest, signal: AbortSignal): Promise<void>;
+}
+
 export interface AgentTurnRunnerOptions {
+  readonly exclusiveTurns?: ExclusiveImTurnHandler;
   readonly feishuTurnReactions?: boolean;
   readonly bindingStore: SessionBindingStore;
   readonly connection: Pick<RuntimeConnection, "send"> & {
@@ -93,6 +105,7 @@ export interface TurnCompletion {
 
 export class AgentTurnRunner {
   readonly #bindingStore: SessionBindingStore;
+  readonly #exclusiveTurns?: ExclusiveImTurnHandler;
   readonly #connection: AgentTurnRunnerOptions["connection"];
   readonly #custody: Pick<TurnCustodyOwner, "markReporting" | "recordResult">;
   readonly #logger: ClientLogger;
@@ -111,6 +124,7 @@ export class AgentTurnRunner {
   constructor(options: AgentTurnRunnerOptions) {
     this.#feishuTurnReactions = options.feishuTurnReactions ?? false;
     this.#bindingStore = options.bindingStore;
+    this.#exclusiveTurns = options.exclusiveTurns;
     this.#connection = options.connection;
     this.#custody = options.custody;
     this.#logger = options.logger ?? createLogger("turn");
@@ -247,8 +261,7 @@ export class AgentTurnRunner {
     });
     let completion: TurnCompletion = { outcome: "unknown", executionEffects: "may_have_occurred" };
     let terminalObserved = false;
-    let releaseObserver: () => void = () => undefined;
-    let turnPlanInput: ProviderCliTurnPlanPrepareInput | undefined;
+    const resources: { turnPlanInput?: ProviderCliTurnPlanPrepareInput } = {};
     try {
       await this.#bindingStore.updateUnresolved(
         owner.request.agentId,
@@ -256,51 +269,18 @@ export class AgentTurnRunner {
         owner.turnId,
         "starting",
       );
-      const credentials = await this.#credentialEnvironment.prepare(owner.request, signal);
-      this.#startReactions(turn, credentials.feishuReactionAuth);
-      if (this.#turnPlan && this.#runtimeManager.sessionKind(owner.request.sessionId) === "visible") {
-        turnPlanInput = {
-          provider: credentials.provider,
-          sessionId: owner.request.sessionId,
-          runId: owner.turnId,
-          ...outgoingReplyCapturePlan(credentials.provider, turn.captureInReport),
-          ...(credentials.slackConfigDir ? { configDir: credentials.slackConfigDir } : {}),
-        };
-        await this.#turnPlan.prepare(turnPlanInput, signal);
-      }
-      signal.throwIfAborted();
-      const runtime = await this.#runtimeManager.ensureRuntime(owner.request.sessionId, signal);
-      turn.runtime = runtime;
-      const cwd = this.#runtimeManager.cwd(owner.request.sessionId);
-      const supplementalContext = await this.#resourceFetcher?.fetchForTurn(owner.request, cwd);
-      releaseObserver = this.#runtimeManager.observe(owner.request.sessionId, async (event) => {
-        trace.record(event);
-        if (event.type === "run_started" && event.runId === owner.turnId) {
-          await this.#bindingStore.updateUnresolved(
-            owner.request.agentId,
-            owner.request.sessionId,
-            owner.turnId,
-            "running",
-          );
-          turn.phase = "running";
-        }
-        if (
-          event.type === "run_completed" ||
-          event.type === "run_failed" ||
-          event.type === "run_aborted" ||
-          event.type === "run_cancelled"
-        ) {
+      if (this.#exclusiveTurns?.owns(owner.request)) {
+        signal.throwIfAborted();
+        // No legacy model, CLI send, reaction, or temporary credential projection.
+        await this.#exclusiveTurns.accept(owner.request, signal);
+        signal.throwIfAborted();
+        completion = { outcome: "completed", executionEffects: "completed" };
+        trace.turnCompleted(completion.outcome);
+      } else {
+        completion = await this.#runNative(turn, signal, trace, resources, () => {
           terminalObserved = true;
-        }
-        await this.#onRuntimeEvent?.(event);
-      });
-      const result = await runtime.prompt({
-        runId: owner.turnId,
-        input: buildAgentInput(owner.request, supplementalContext, undefined, Boolean(turn.reactions)),
-        signal,
-      });
-      turn.phase = "reporting";
-      completion = completionForResult(result, signal.reason);
+        });
+      }
     } catch (error) {
       turn.phase = "reporting";
       completion = completionForError(error, signal.reason);
@@ -317,17 +297,12 @@ export class AgentTurnRunner {
       /* v8 ignore else -- a terminal event observed before the failure already recorded the outcome. */
       if (!terminalObserved) trace.turnCompleted(completion.outcome);
     } finally {
-      releaseObserver();
       await turn.reactions?.finish(completion.outcome);
-      if (turnPlanInput) {
-        /* v8 ignore next -- turn-plan teardown is best-effort. */
-        await this.#turnPlan?.cleanup(turnPlanInput).catch(() => undefined);
-      }
-      /* v8 ignore next -- credential teardown is best-effort. */
-      await this.#credentialEnvironment.cleanup(owner.request.sessionId).catch(() => undefined);
       clearTimeout(timer);
     }
 
+    turn.phase = "reporting";
+    const turnPlanInput = resources.turnPlanInput;
     const traceSummary = await trace.finish();
     if (completion.outcome === "completed") {
       this.#logger.info(
@@ -371,6 +346,72 @@ export class AgentTurnRunner {
           "Turn Report submission failed",
         );
       });
+  }
+
+  async #runNative(
+    turn: RunningTurn,
+    signal: AbortSignal,
+    trace: TurnTraceBuffer,
+    resources: { turnPlanInput?: ProviderCliTurnPlanPrepareInput },
+    onTerminal: () => void,
+  ): Promise<TurnCompletion> {
+    const owner = turn.owner;
+    let releaseObserver: () => void = () => undefined;
+    try {
+      const credentials = await this.#credentialEnvironment.prepare(owner.request, signal);
+      this.#startReactions(turn, credentials.feishuReactionAuth);
+      if (this.#turnPlan && this.#runtimeManager.sessionKind(owner.request.sessionId) === "visible") {
+        resources.turnPlanInput = {
+          provider: credentials.provider,
+          sessionId: owner.request.sessionId,
+          runId: owner.turnId,
+          ...outgoingReplyCapturePlan(credentials.provider, turn.captureInReport),
+          ...(credentials.slackConfigDir ? { configDir: credentials.slackConfigDir } : {}),
+        };
+        await this.#turnPlan.prepare(resources.turnPlanInput, signal);
+      }
+      signal.throwIfAborted();
+      const runtime = await this.#runtimeManager.ensureRuntime(owner.request.sessionId, signal);
+      turn.runtime = runtime;
+      const cwd = this.#runtimeManager.cwd(owner.request.sessionId);
+      const supplementalContext = await this.#resourceFetcher?.fetchForTurn(owner.request, cwd);
+      releaseObserver = this.#runtimeManager.observe(owner.request.sessionId, async (event) => {
+        trace.record(event);
+        if (event.type === "run_started" && event.runId === owner.turnId) {
+          await this.#bindingStore.updateUnresolved(
+            owner.request.agentId,
+            owner.request.sessionId,
+            owner.turnId,
+            "running",
+          );
+          turn.phase = "running";
+        }
+        if (
+          event.type === "run_completed" ||
+          event.type === "run_failed" ||
+          event.type === "run_aborted" ||
+          event.type === "run_cancelled"
+        ) {
+          onTerminal();
+        }
+        await this.#onRuntimeEvent?.(event);
+      });
+      const result = await runtime.prompt({
+        runId: owner.turnId,
+        input: buildAgentInput(owner.request, supplementalContext, undefined, Boolean(turn.reactions)),
+        signal,
+      });
+      return completionForResult(result, signal.reason);
+    } finally {
+      releaseObserver();
+      // The outer owner finishes reactions with the actual completion outcome.
+      if (resources.turnPlanInput) {
+        /* v8 ignore next -- turn-plan teardown is best-effort. */
+        await this.#turnPlan?.cleanup(resources.turnPlanInput).catch(() => undefined);
+      }
+      /* v8 ignore next -- credential teardown is best-effort. */
+      await this.#credentialEnvironment.cleanup(owner.request.sessionId).catch(() => undefined);
+    }
   }
 
   async #collectOutgoingReplies(

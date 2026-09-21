@@ -7,7 +7,7 @@ product capabilities without an agreed design.
 
 ## Workflow
 
-1. Create a branch with one of these prefixes: `feat/`, `fix/`, `refactor/`, `test/`, `docs/`, `chore/`, or `merge/`.
+1. Create a branch with one of these prefixes: `feat/`, `fix/`, `refactor/`, `test/`, `docs/`, `chore/`, `merge/`, or `codex/`.
 2. Install dependencies with `pnpm install`. This also installs the Git hooks that lint and format staged files before a
    commit and re-check the repository before a push, described in
    [DEVELOPMENT.md](./DEVELOPMENT.md#git-hooks-and-worktrees).

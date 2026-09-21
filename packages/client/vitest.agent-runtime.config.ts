@@ -23,6 +23,7 @@ export default defineConfig({
       "src/__tests__/agent-runtime-validation.test.ts",
       "src/__tests__/agent-runtime-provider-registry.test.ts",
       "src/__tests__/agent-turn-runner.test.ts",
+      "src/__tests__/anc-exclusive-ingress.test.ts",
       "src/__tests__/claude-code-agent-runtime.test.ts",
       "src/__tests__/claude-code-agent-runtime-exhaustive.test.ts",
       "src/__tests__/claude-code-hosted-tool-bridge.test.ts",

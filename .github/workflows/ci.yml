@@ -26,7 +26,7 @@ jobs:
           BRANCH_NAME: ${{ github.head_ref }}
         run: |
           case "$BRANCH_NAME" in
-            feat/*|fix/*|refactor/*|test/*|docs/*|chore/*|merge/*) ;;
+            feat/*|fix/*|refactor/*|test/*|docs/*|chore/*|merge/*|codex/*) ;;
             dependabot/npm_and_yarn/*|dependabot/github_actions/*)
               if [ "$ACTOR" != "dependabot[bot]" ]; then
                 echo "Dependabot branch prefix is reserved for dependabot[bot]" >&2

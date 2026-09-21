@@ -22,6 +22,129 @@ afterEach(async () => {
 });
 
 describe("ImCredentialEnvironmentManager", () => {
+  it("grants a bound-session Feishu token without creating any CLI projection", async () => {
+    const home = await temporaryHome();
+    const connection = grantConnection((request) => ({
+      type: "im:credential:result",
+      requestId: request.requestId,
+      status: "succeeded",
+      credentialGeneration: 1,
+      grant: { provider: "feishu", appId: "pilot-app", appSecret: "test-secret", teamBrand: "feishu" },
+    }));
+    const writeEnvironmentFile = vi.fn(async () => undefined);
+    const manager = new ImCredentialEnvironmentManager({
+      home,
+      connection,
+      writeEnvironmentFile,
+      exchangeFeishuToken: async () => "test-tenant-token",
+    });
+    const request = delivery("direct");
+    expect(await manager.feishuToken(request)).toEqual({
+      appId: "pilot-app",
+      brand: "feishu",
+      token: "test-tenant-token",
+    });
+    expect(connection.requests).toEqual([
+      expect.objectContaining({
+        agentId: request.agentId,
+        sessionId: request.sessionId,
+        placementGeneration: request.placementGeneration,
+      }),
+    ]);
+    expect(writeEnvironmentFile).not.toHaveBeenCalled();
+    await expect(stat(manager.pathForSession(request.sessionId))).rejects.toMatchObject({ code: "ENOENT" });
+    await manager.close();
+  });
+
+  it("does not remove an active Turn credential file when background token exchange fails", async () => {
+    const home = await temporaryHome();
+    const connection = grantConnection((request) => ({
+      type: "im:credential:result",
+      requestId: request.requestId,
+      status: "succeeded",
+      credentialGeneration: 1,
+      grant: { provider: "feishu", appId: "pilot-app", appSecret: "test-secret", teamBrand: "feishu" },
+    }));
+    let fail = false;
+    const manager = new ImCredentialEnvironmentManager({
+      home,
+      connection,
+      exchangeFeishuToken: async () => {
+        if (fail) throw new Error("transport test-secret diagnostic");
+        return "test-token";
+      },
+    });
+    const request = delivery("direct");
+    const prepared = await manager.prepare(request);
+    const before = await readFile(prepared.path, "utf8");
+    fail = true;
+    const error = await manager.feishuToken(request).catch((value: unknown) => value);
+    expect(error).toMatchObject({ code: "credential_grant_failed" });
+    expect(String(error)).not.toContain("test-secret");
+    expect(await readFile(prepared.path, "utf8")).toBe(before);
+    await manager.close();
+  });
+
+  it("fails closed for a non-Feishu binding and after manager shutdown", async () => {
+    const home = await temporaryHome();
+    const exchange = vi.fn(async () => "must-not-exchange");
+    const manager = new ImCredentialEnvironmentManager({
+      home,
+      exchangeFeishuToken: exchange,
+      connection: grantConnection((request) => ({
+        type: "im:credential:result",
+        requestId: request.requestId,
+        status: "succeeded",
+        credentialGeneration: 1,
+        grant: { provider: "slack", botAccessToken: "test-slack" },
+      })),
+    });
+    await expect(manager.feishuToken(delivery("direct"))).rejects.toMatchObject({ code: "provider_mismatch" });
+    expect(exchange).not.toHaveBeenCalled();
+    await manager.close();
+    await expect(manager.feishuToken(delivery("direct"))).rejects.toMatchObject({ code: "client_shutdown" });
+  });
+
+  it("does not return an exchanged token after delivery has been aborted", async () => {
+    const home = await temporaryHome();
+    const abort = new AbortController();
+    const manager = new ImCredentialEnvironmentManager({
+      home,
+      connection: grantConnection((request) => ({
+        type: "im:credential:result",
+        requestId: request.requestId,
+        status: "succeeded",
+        credentialGeneration: 1,
+        grant: { provider: "feishu", appId: "pilot-app", appSecret: "test-secret", teamBrand: "lark" },
+      })),
+      exchangeFeishuToken: async () => {
+        abort.abort();
+        return "discarded-token";
+      },
+    });
+    await expect(manager.feishuToken(delivery("direct"), abort.signal)).rejects.toMatchObject({ code: "aborted" });
+    await manager.close();
+  });
+
+  it("does not return an empty tenant token", async () => {
+    const home = await temporaryHome();
+    const manager = new ImCredentialEnvironmentManager({
+      home,
+      exchangeFeishuToken: async () => "",
+      connection: grantConnection((request) => ({
+        type: "im:credential:result",
+        requestId: request.requestId,
+        status: "succeeded",
+        credentialGeneration: 1,
+        grant: { provider: "feishu", appId: "pilot-app", appSecret: "test-secret", teamBrand: "feishu" },
+      })),
+    });
+    await expect(manager.feishuToken(delivery("direct"))).rejects.toMatchObject({
+      code: "tenant_token_exchange_failed",
+    });
+    await manager.close();
+  });
+
   it.each(["direct", "ambient"] as const)(
     "projects and removes the Slack Bot token for a %s Turn without attention-based authorization",
     async (attention) => {
