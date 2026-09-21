@@ -8,6 +8,8 @@ import {
   type AncHumanRequest,
   AncId,
   type AncProject,
+  type AncProjectPolicy,
+  AncProjectPolicySchema,
   type AncSnapshot,
   type AncTask,
 } from "./schemas.js";
@@ -70,6 +72,14 @@ function wake(s: AncSnapshot, seed: string, taskId?: string, recoveryOf?: string
   if (!(taskId ? s.project.tasks[taskId]?.sessionId : s.project.sessionId)) return;
   effect(s, seed, "session.wake", { taskId, recoveryOf });
 }
+/** Internal results satisfy internal dependencies; external milestones still need delivery receipts. */
+function taskIsComplete(t: AncTask | undefined): boolean {
+  return t?.mode === "internal" ? t.status === "completed" : t?.status === "delivered";
+}
+function startOwner(s: AncSnapshot, seed: string): void {
+  if (s.project.sessionId) wake(s, seed);
+  else effect(s, s.project.id, "session.create");
+}
 function task(s: AncSnapshot, id: string): AncTask {
   const found = s.project.tasks[id];
   requireCondition(found, "Unknown task");
@@ -95,7 +105,7 @@ export function ancEffectIsCurrent(s: AncSnapshot, e: AncEffect): boolean {
   if (e.taskId && e.taskRevision !== s.project.tasks[e.taskId]?.revision) return false;
   if (e.kind === "artifact.publish") {
     const t = e.taskId ? s.project.tasks[e.taskId] : undefined;
-    return t?.status === "approved" && t.artifact?.revision === e.artifactRevision;
+    return t?.mode !== "internal" && t?.status === "approved" && t.artifact?.revision === e.artifactRevision;
   }
   if (e.kind === "human.send" || e.kind === "human.remind") {
     const r = e.requestId ? s.project.requests[e.requestId] : undefined;
@@ -147,7 +157,7 @@ function proposeClose(s: AncSnapshot, c: Command<"project.close">): void {
   const p = s.project;
   requireCondition(p.status === "active" && !p.pendingBrief, "Project cannot close");
   requireCondition(
-    Object.values(p.tasks).length > 0 && Object.values(p.tasks).every((t) => t.status === "delivered"),
+    Object.values(p.tasks).length > 0 && Object.values(p.tasks).every(taskIsComplete),
     "Deliver all tasks before closing",
   );
   requireCondition(
@@ -157,13 +167,20 @@ function proposeClose(s: AncSnapshot, c: Command<"project.close">): void {
   p.status = "closing";
   humanRequest(
     s,
-    request(p, key(c.eventId), "close", "Review the delivered outcomes and confirm project closure.", c.dueAt),
+    request(
+      p,
+      key(c.eventId),
+      "close",
+      "Review the recorded outcomes and delivery receipts, then confirm project closure.",
+      c.dueAt,
+    ),
   );
 }
 function dispatch(s: AncSnapshot, c: Command<"task.dispatch">): void {
   const p = s.project;
   requireCondition(p.status === "active" && p.groupId && p.sessionId && !p.pendingBrief, "Project is not ready");
   requireCondition(!p.tasks[c.taskId], "Task already exists");
+  requireCondition(c.mode !== "internal" || p.policy?.allowInternalTasks === true, "Internal tasks are not authorized");
   requireCondition(
     p.roles[c.reviewerRole] && p.participants.includes(p.roles[c.reviewerRole] ?? ""),
     "Unknown reviewer role",
@@ -172,6 +189,7 @@ function dispatch(s: AncSnapshot, c: Command<"task.dispatch">): void {
     requireCondition(p.tasks[dependency] && dependency !== c.taskId, "Unknown or cyclic dependency");
   p.tasks[c.taskId] = {
     id: c.taskId,
+    ...(c.mode ? { mode: c.mode } : {}),
     goal: c.goal,
     acceptance: c.acceptance,
     dependencies: c.dependencies,
@@ -193,6 +211,7 @@ function reviseTask(s: AncSnapshot, c: Command<"task.revise">): void {
   t.goal = c.goal;
   t.acceptance = c.acceptance;
   delete t.artifact;
+  delete t.result;
   t.status = "ready";
 }
 function report(s: AncSnapshot, c: Command<"task.report_result">): void {
@@ -218,6 +237,16 @@ function report(s: AncSnapshot, c: Command<"task.report_result">): void {
       recipientId: p.roles[t.reviewerRole] ?? p.dri,
     }),
   );
+}
+function completeInternal(s: AncSnapshot, c: Command<"task.complete_internal">): void {
+  const p = s.project;
+  const t = task(s, c.taskId);
+  requireCondition(p.status === "active" && !p.pendingBrief, "Project is not ready for results");
+  requireCondition(t.mode === "internal" && p.policy?.allowInternalTasks === true, "Not an authorized internal task");
+  requireCondition(t.status === "running" && t.revision === c.expectedRevision, "Stale or non-running task result");
+  // A working result is neither human approval nor evidence of external delivery.
+  t.result = c.summary;
+  t.status = "completed";
 }
 function ask(s: AncSnapshot, c: Command<"human.request">): void {
   const p = s.project;
@@ -258,6 +287,10 @@ function deadlines(s: AncSnapshot, now: number): void {
 
 export interface AncLoopOptions {
   readonly now?: () => number;
+  /** Resolved once at project creation from verified admission/configuration, then persisted.
+   * Never derive this policy from model prose. The transport must allowlist an existing group.
+   */
+  readonly projectPolicy?: (projectId: string) => AncProjectPolicy | undefined;
   /** Must verify local bytes, expected digest, and required checks before accepting model claims. */
   readonly verifyArtifact: (artifact: AncArtifact) => Promise<void>;
   /** Review copies must be outside agent-writable workspaces. Do not alter revision or digest. */
@@ -310,6 +343,7 @@ export class AncProjectLoop {
 
   private async prepareArtifact(s: AncSnapshot, caller: AncCaller, c: AncCommand): Promise<void> {
     if (c.operation === "task.report_result") {
+      requireCondition(task(s, c.taskId).mode !== "internal", "Use task.complete_internal for an internal result");
       await this.options.verifyArtifact(c.artifact);
       if (this.options.retainArtifact) {
         const retained = await this.options.retainArtifact(c.artifact);
@@ -330,6 +364,10 @@ export class AncProjectLoop {
   async verifyDelivery(e: AncEffect, s: AncSnapshot): Promise<void> {
     const review = e.requestId ? s.project.requests[e.requestId]?.purpose === "task_review" : false;
     if (e.kind !== "artifact.publish" && !((e.kind === "human.send" || e.kind === "human.remind") && review)) return;
+    requireCondition(
+      !e.taskId || s.project.tasks[e.taskId]?.mode !== "internal",
+      "Internal results cannot be published",
+    );
     const artifact = e.taskId ? s.project.tasks[e.taskId]?.artifact : undefined;
     requireCondition(artifact && artifact.revision === e.artifactRevision, "Missing delivery artifact revision");
     await this.options.verifyArtifact(artifact);
@@ -342,6 +380,8 @@ export class AncProjectLoop {
       Object.values(c.roles).every((person) => c.participants.includes(person)),
       "Role member is outside the project",
     );
+    const admitted = this.options.projectPolicy?.(c.projectId);
+    const policy = admitted === undefined ? undefined : AncProjectPolicySchema.parse(admitted);
     return {
       schemaVersion: 1,
       project: {
@@ -352,6 +392,7 @@ export class AncProjectLoop {
         participants: [...new Set(c.participants)],
         roles: { ...c.roles, owner: c.dri },
         status: "proposed",
+        ...(policy ? { policy, groupId: policy.existingGroupId } : {}),
         sessionId: caller.ownerSessionId,
         revision: 1,
         tasks: {},
@@ -390,6 +431,11 @@ export class AncProjectLoop {
         break;
       case "task.report_result":
         report(s, c);
+        break;
+      case "task.complete_internal":
+        completeInternal(s, c);
+        this.scheduleReady(s);
+        wake(s, c.eventId);
         break;
       case "human.request":
         ask(s, c);
@@ -481,7 +527,8 @@ export class AncProjectLoop {
     }
     if (r.purpose === "start" && c.decision === "approve") {
       p.status = "active";
-      effect(s, p.id, "group.create");
+      if (p.groupId) startOwner(s, c.eventId);
+      else effect(s, p.id, "group.create");
       return;
     }
     if (r.purpose === "close") {
@@ -496,7 +543,7 @@ export class AncProjectLoop {
   scheduleReady(s: AncSnapshot): void {
     for (const t of Object.values(s.project.tasks)) {
       if (t.status !== "ready") continue;
-      if (!t.dependencies.every((id) => s.project.tasks[id]?.status === "delivered")) continue;
+      if (!t.dependencies.every((id) => taskIsComplete(s.project.tasks[id]))) continue;
       if (t.sessionId) {
         t.status = "running";
         wake(s, `${s.project.id}:${t.id}:${t.revision}`, t.id);
@@ -522,8 +569,7 @@ export class AncProjectLoop {
     const p = s.project;
     if (e.kind === "group.create") {
       p.groupId = receipt;
-      if (p.sessionId) wake(s, e.id);
-      else effect(s, p.id, "session.create");
+      startOwner(s, e.id);
     } else if (e.kind === "session.create") {
       if (e.taskId) {
         const t = task(s, e.taskId);

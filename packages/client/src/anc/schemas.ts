@@ -3,6 +3,14 @@ import { z } from "zod";
 export const AncId = z.string().regex(/^[A-Za-z0-9_-]{1,96}$/);
 const Text = z.string().trim().min(1).max(16000);
 const Time = z.number().int().nonnegative();
+/** Trusted admission policy, not model-supplied command input. Missing fields preserve the strict pilot. */
+export const AncProjectPolicySchema = z
+  .object({
+    existingGroupId: AncId.optional(),
+    allowInternalTasks: z.boolean().optional(),
+  })
+  .strict();
+export type AncProjectPolicy = z.infer<typeof AncProjectPolicySchema>;
 export const AncArtifactSchema = z.object({
   title: Text,
   uri: Text,
@@ -16,7 +24,10 @@ export const AncTaskSchema = z.object({
   acceptance: z.array(Text).min(1).max(20),
   dependencies: z.array(AncId),
   reviewerRole: AncId.default("owner"),
-  status: z.enum(["ready", "running", "waiting_human", "approved", "delivered", "blocked"]),
+  // Omitted mode means a reviewed, externally delivered milestone, including old snapshots.
+  mode: z.enum(["internal", "deliverable"]).optional(),
+  result: Text.optional(),
+  status: z.enum(["ready", "running", "waiting_human", "completed", "approved", "delivered", "blocked"]),
   revision: z.number().int().positive(),
   sessionId: Text.optional(),
   artifact: AncArtifactSchema.optional(),
@@ -76,6 +87,7 @@ export const AncProjectSchema = z.object({
   pendingBrief: Text.optional(),
   groupId: Text.optional(),
   sessionId: Text.optional(),
+  policy: AncProjectPolicySchema.optional(),
   tasks: z.record(AncId, AncTaskSchema),
   requests: z.record(AncId, AncHumanRequestSchema),
 });
@@ -112,6 +124,8 @@ export const AncCommandSchema = z.discriminatedUnion("operation", [
   Base.extend({
     operation: z.literal("task.dispatch"),
     taskId: AncId,
+    // Optional rather than defaulted: replaying an old event must keep its original command digest.
+    mode: z.enum(["internal", "deliverable"]).optional(),
     goal: Text,
     acceptance: z.array(Text).min(1).max(20),
     dependencies: z.array(AncId).default([]),
@@ -130,6 +144,12 @@ export const AncCommandSchema = z.discriminatedUnion("operation", [
     expectedRevision: z.number().int().positive(),
     artifact: AncArtifactSchema,
     dueAt: Time,
+  }),
+  Base.extend({
+    operation: z.literal("task.complete_internal"),
+    taskId: AncId,
+    expectedRevision: z.number().int().positive(),
+    summary: Text,
   }),
   Base.extend({
     operation: z.literal("human.request"),

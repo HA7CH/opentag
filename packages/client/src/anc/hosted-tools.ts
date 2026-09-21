@@ -17,7 +17,7 @@ export interface AncAgentScope {
 function permitted(operation: string, scope: AncAgentScope): boolean {
   if (operation === "human.respond" || operation === "deadline.check") return false;
   if (!scope.taskId) return true;
-  return operation === "task.report_result" || operation === "human.request";
+  return operation === "task.report_result" || operation === "task.complete_internal" || operation === "human.request";
 }
 
 function scopedInput(call: AgentHostedToolCall, scope: AncAgentScope): Record<string, JsonValue> {
@@ -47,6 +47,18 @@ export function ancAgentView(snapshot: AncSnapshot, scope: AncAgentScope): unkno
   return {
     project: { id: snapshot.project.id, title: snapshot.project.title, brief: snapshot.project.brief },
     task,
+    // Only declared dependencies are shared, never other workers' sessions or human conversations.
+    dependencies: task.dependencies.map((id) => {
+      const dependency = snapshot.project.tasks[id];
+      if (!dependency) throw new Error("Unknown task dependency");
+      return {
+        id,
+        revision: dependency.revision,
+        status: dependency.status,
+        result: dependency.status === "completed" ? dependency.result : undefined,
+        artifact: dependency.status === "delivered" ? dependency.artifact : undefined,
+      };
+    }),
     deliveryIssues,
     humanRequests: Object.values(snapshot.project.requests).filter((r) => r.taskId === scope.taskId),
   };
@@ -74,7 +86,10 @@ export function createAncHostedTools(loop: AncProjectLoop, scope: AncAgentScope)
       },
       ...[...operations].map(([name, schema]) => ({
         name,
-        description: `Persist ${schema.shape.operation.value}. The runtime supplies project, event and actor identity.`,
+        description:
+          schema.shape.operation.value === "task.complete_internal"
+            ? "Record a working summary for an admitted internal task only; this never approves or publishes an artifact."
+            : `Persist ${schema.shape.operation.value}. The runtime supplies project, event and actor identity.`,
         inputSchema: portableAncSchema(
           (schema as z.ZodObject).omit({ projectId: true, eventId: true, operation: true }),
         ),
